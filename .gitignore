@@ -9,9 +9,17 @@
 *~
 Thumbs.db
 
+# Environment & secrets（防止 API Key、数据库密码等敏感配置误提交）
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+secrets/
+
 # IDEs & Editors
-### cursor
-.cursor/
+### Cursor ###
+.cursor/*
 ### VS Code / Cursor ###
 .vscode/
 # VS Code Local History plugin
@@ -53,12 +61,9 @@ bin/
 target/
 
 # Spring Boot
-help.md
+# spring-boot-maven-plugin 自动生成的帮助文档（大写 HELP.md）
+HELP.md
 # PID file (created when using 'spring-boot:run')
 *.pid
 
-# java
-mise.toml
-
-# AI
-scripts/
+# mise.toml 为团队工具版本配置，应提交到仓库以保持开发环境一致
