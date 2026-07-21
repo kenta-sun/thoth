@@ -1,0 +1,64 @@
+# macOS (Operating System)
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Miscellaneous
+*.swp
+*~
+Thumbs.db
+
+# IDEs & Editors
+### cursor
+.cursor/
+### VS Code / Cursor ###
+.vscode/
+# VS Code Local History plugin
+.history/
+*.code-workspace
+### IntelliJ IDEA ###
+.idea/
+.aiassistant/
+*.iws
+*.iml
+*.ipr
+out/
+# IDEA plugins
+.xcodemap/
+### Eclipse / STS (Spring Tool Suite) ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+
+# Java & Maven (Build System)
+*.class
+.flattened-pom.xml
+
+# Log files
+*.log
+
+# Package Files
+*.jar
+*.war
+*.ear
+*.nar
+
+# Maven
+target/
+
+# Spring Boot
+help.md
+# PID file (created when using 'spring-boot:run')
+*.pid
+
+# java
+mise.toml
+
+# AI
+scripts/
