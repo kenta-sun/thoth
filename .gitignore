@@ -44,6 +44,9 @@ out/
 .sts4-cache
 bin/
 
+# python
+.venv/
+
 # Java & Maven (Build System)
 *.class
 .flattened-pom.xml
