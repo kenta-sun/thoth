@@ -46,6 +46,7 @@ bin/
 
 # python
 .venv/
+**/__pycache__/
 
 # Java & Maven (Build System)
 *.class
