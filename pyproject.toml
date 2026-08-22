@@ -6,4 +6,28 @@ dependencies = [
     "fastmcp==3.4.4",
     "openai>=3.3.1",
     "python-dotenv>=1.2.2",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.4",
 ]
+
+[dependency-groups]
+# 开发期依赖，不会随包一起发布。用 uv sync 会自动装上。
+dev = [
+    "pytest>=8.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 项目采用 src 布局，需要显式告诉构建后端包的真实位置，
+# 否则 hatchling 会按项目名去根目录找 thoth/ 而找不到包。
+[tool.hatch.build.targets.wheel]
+packages = ["src/thoth"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -s 关闭输出捕获。这批测试的目的之一就是把提取出来的记忆打到控制台上人工过目，
+# 捕获掉就看不见了，所以默认开启。
+# -ra 在结尾汇总非通过用例的原因。
+addopts = "-ra -s"
