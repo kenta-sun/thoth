@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
@@ -11,7 +12,8 @@ from fastmcp import Client
 
 from thoth import mcp_server
 from thoth.db.connection import DatabaseError
-from thoth.db.word_repo import SaveResult
+from thoth.db.word_repo import MissingWordFieldsError, SaveResult
+from thoth.entities import WordEntity
 
 
 @pytest.fixture
@@ -23,7 +25,7 @@ def backend(monkeypatch):
     connection_context.__enter__.return_value = connection
     open_connection = Mock(return_value=connection_context)
     repository = Mock(
-        find_existing_words=Mock(return_value=set()),
+        find_existing_words=Mock(return_value=[]),
         save=Mock(return_value=SaveResult(status="created")),
     )
     repository_factory = Mock(return_value=repository)
@@ -88,18 +90,65 @@ def test_invalid_json_is_protocol_error_before_database_access(backend, text):
 
 
 def test_tool_returns_structured_per_word_results(backend):
+    backend.repository.save.return_value = SaveResult(
+        status="created",
+        entity=WordEntity(
+            id=1, word="食べる", common_form="食べる", hiragana="たべる", meaning="吃",
+            status_code="A", created_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+            created_by="test-operator", updated_by="test-operator",
+        ),
+    )
     result = call_save_words(json.dumps([
         {"word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
         {"word": "飲む", "operation": {"action": "delete"}},
     ]))
 
     assert result.isError is False
-    assert [item["status"] for item in result.structuredContent["results"]] == ["created", "failed"]
+    assert result.structuredContent == {
+        "results": [
+            {"index": 0, "word": "食べる", "status": "created"},
+            {
+                "index": 1, "word": "飲む", "status": "failed",
+                "reason": "operation.action 仅允许 create 或 update。",
+            },
+        ],
+    }
     backend.get_settings.assert_called_once_with()
     backend.open_connection.assert_called_once_with(backend.settings)
     backend.repository_factory.assert_called_once_with(backend.connection, operator="test-operator")
     backend.repository.find_existing_words.assert_called_once_with(["食べる"])
-    backend.repository.save.assert_called_once()
+    backend.repository.save.assert_called_once_with(
+        WordEntity(word="食べる", common_form="食べる", hiragana="たべる", meaning="吃"),
+        action="create", exists=False,
+    )
+
+
+def test_tool_serializes_optional_reason_and_missing_fields_only_when_present(backend):
+    missing_fields = MissingWordFieldsError(("common_form", "hiragana"))
+    backend.repository.find_existing_words.return_value = [WordEntity(word="食べる")]
+    backend.repository.save.side_effect = [
+        SaveResult(status="skipped", reason="单词已存在。"),
+        missing_fields,
+        SaveResult(status="created"),
+    ]
+
+    result = call_save_words(json.dumps([
+        {"word": "食べる"},
+        {"word": "飲む", "meaning": "喝"},
+        {"word": "走る", "common_form": "走る", "hiragana": "はしる", "meaning": "跑"},
+    ]))
+
+    assert result.isError is False
+    assert result.structuredContent == {
+        "results": [
+            {"index": 0, "word": "食べる", "status": "skipped", "reason": "单词已存在。"},
+            {
+                "index": 1, "word": "飲む", "status": "failed",
+                "reason": str(missing_fields), "fields": ["common_form", "hiragana"],
+            },
+            {"index": 2, "word": "走る", "status": "created"},
+        ],
+    }
 
 
 def test_database_connection_failure_is_protocol_error(backend):
@@ -137,7 +186,7 @@ def test_surrogate_word_returns_serializable_failure_without_disrupting_valid_wo
     json.dumps(result.structuredContent, ensure_ascii=False).encode("utf-8")
     backend.repository.find_existing_words.assert_called_once_with(["飲む"])
     backend.repository.save.assert_called_once()
-    assert backend.repository.save.call_args.kwargs["word"] == "飲む"
+    assert backend.repository.save.call_args.args[0].word == "飲む"
 
 
 def test_configuration_failure_is_protocol_error(backend):

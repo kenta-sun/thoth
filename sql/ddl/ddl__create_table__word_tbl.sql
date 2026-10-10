@@ -25,7 +25,7 @@ COMMENT ON TABLE word_tbl IS '单词表';
 
 COMMENT ON COLUMN word_tbl.id IS '单词ID，自增主键';
 COMMENT ON COLUMN word_tbl.word IS '单词基本形式，唯一，用于判重和更新定位，包含已删除单词';
-COMMENT ON COLUMN word_tbl.common_form IS '单词常用写法，新增时未提供则由程序使用基本形式填入';
+COMMENT ON COLUMN word_tbl.common_form IS '单词常用写法，新增时由调用方显式提供';
 COMMENT ON COLUMN word_tbl.hiragana IS '平假名读音';
 COMMENT ON COLUMN word_tbl.meaning IS '中文释义';
 COMMENT ON COLUMN word_tbl.status_code IS '单词状态，A=正在使用，D=被删除';
