@@ -136,35 +136,58 @@ def main(argv: list[str] | None = None) -> int:
     这里只捕获可预期的异常并转成友好的中文提示 + 退出码 1；
     未预期的异常故意不捕获，让堆栈完整暴露出来便于排查。
     """
+    # 解析命令行参数（--file / --text / --verbose）。
+    # argv 为 None 时，argparse 内部会自动使用 sys.argv[1:]。
     args = build_arg_parser().parse_args(argv)
+
+    # 根据 --verbose 决定日志级别，并让日志统一输出到 stderr。
+    # 必须在真正开始处理业务之前就配置好，否则前面的日志会用默认配置打印。
     configure_logging(args.verbose)
 
     try:
+        # 拿到待提取的原始文本。
+        # 内部会按优先级依次尝试 --file → --text → 标准输入，
+        # 并在文本为空白时抛出 ValueError。
         text = resolve_input_text(args)
+
+        # 加载全局配置（OpenAI/数据库/去重策略等），
+        # get_settings 内部用 lru_cache 做单例，进程内多次调用只解析一次。
         settings = get_settings()
 
+        # 打印一下本次运行实际使用的模型名，方便排查“为什么结果不对”时
+        # 先确认调用的到底是哪个模型。
         logger.info(
             "使用对话模型 %s / Embedding 模型 %s。",
             settings.llm_model,
             settings.embedding_model,
         )
 
+        # 打开数据库连接（with 语句保证函数退出时连接一定会被关闭/回收），
+        # 然后用连接 + 配置组装出一条完整的提取流水线，
+        # 最后对文本执行提取，得到包含“新增/重复放弃/待重拆”三类结果的报告。
         with open_connection(settings) as connection:
             pipeline = ExtractionPipeline.build(connection, settings)
             report = pipeline.run(text)
 
     except (OSError, ValueError) as exc:
+        # 读文件失败（文件不存在/无权限）或者输入文本为空，都会落到这里。
         print(f"执行失败：{exc}", file=sys.stderr)
         return 1
     except LlmError as exc:
+        # 调用大模型（对话模型/Embedding 模型）失败，比如网络问题、API Key 无效等。
         print(f"大模型调用失败：{exc}", file=sys.stderr)
         return 1
     except DatabaseError as exc:
+        # 数据库连接失败或者写入失败。
         print(f"数据库操作失败：{exc}", file=sys.stderr)
         return 1
 
+    # 走到这里说明提取流程全部成功：先打印一个空行做分隔，
+    # 再把提取报告（人类可读的文本形式）输出到 stderr。
     print("", file=sys.stderr)
     print(report.render_text(), file=sys.stderr)
+
+    # 返回 0 表示进程正常结束。
     return 0
 
 
