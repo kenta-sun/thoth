@@ -4,6 +4,9 @@
 .LSOverride
 ._*
 
+# AI
+.codex/*
+
 # Miscellaneous
 *.swp
 *~
