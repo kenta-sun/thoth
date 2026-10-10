@@ -1,7 +1,3 @@
-# thoth
-A long-term memory store for AI agents.
-
-
  - **Programming Language**: Python 3.11.15
  - **database**:
    - pgvector/pgvector:pg17
