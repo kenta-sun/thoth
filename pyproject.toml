@@ -27,7 +27,5 @@ packages = ["src/thoth"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# -s 关闭输出捕获。这批测试的目的之一就是把提取出来的记忆打到控制台上人工过目，
-# 捕获掉就看不见了，所以默认开启。
 # -ra 在结尾汇总非通过用例的原因。
-addopts = "-ra -s"
+addopts = "-ra"

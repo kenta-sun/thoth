@@ -1,170 +1,66 @@
-"""
-最小可用的 MCP Server 示例（基于 FastMCP）。
-
-设计目标：
-1. 仅暴露两个工具：update_memory 与 query_memory。
-2. 两个工具都只接收一个字符串参数：text。
-3. update_memory：将输入文本写入本地记忆文件，并返回更新内容。
-4. query_memory：当前 demo 固定返回写死字符串（与 text 无关），但仍保留解析与异常处理流程。
-5. 尽量避免向 stdout 打印调试信息，防止干扰 MCP 协议通讯。
-"""
+"""仅通过 save_words 暴露受限制的单词保存接口。"""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
-# 记忆文件路径：放在当前脚本同目录，便于本地演示和排查。
-MEMORY_FILE_PATH = Path(__file__).with_name("memory_store.json")
+from thoth.config import get_settings
+from thoth.db.connection import DatabaseError, open_connection
+from thoth.db.word_repo import WordRepository
+from thoth.word_service import parse_words_text, save_word_batch
 
-# query_memory 的写死返回内容（按需求固定返回，不做动态查询）。
-FIXED_QUERY_RESPONSE = "这是一个写死的记忆查询结果（demo）"
+SAVE_WORDS_DESCRIPTION = """批量新增或修改日语单词，以 word 为唯一判重和更新定位依据。
 
-# 初始化 MCP 服务实例；name 会显示在 MCP 客户端工具列表中。
-mcp = FastMCP(name="thoth-memory-demo")
+唯一参数 text 是 JSON 数组字符串，每个元素代表一个单词。以下展示解析后的结构，
+中文值为字段说明；实际调用时应填写真实信息，并将整个数组序列化为字符串传入 text。
+text 不得包含 Markdown 标记或额外说明。
 
+[
+  {
+    "word": "字符串；单词基本形式，如食べる。始终必填且不能为空，用于判重和更新定位。",
+    "common_form": "字符串；单词常用写法。新增时必填，可以与 word 相同；更新时仅需提供要修改的值。",
+    "hiragana": "字符串；单词的平假名读音。新增时必填；更新时仅需提供要修改的值。",
+    "meaning": "字符串；单词的中文释义。新增时必填；更新时仅需提供要修改的值。",
+    "operation": {
+      "action": "字符串；仅允许 create 或 update。整个 operation 可以省略，省略时默认 create。create：不存在则新增，已存在则跳过。update：不存在则新增，已存在则修改。"
+    }
+  }
+]
 
-def parse_update_text(text: str) -> str:
-    """
-    解析 update_memory 的输入文本。
+执行规则：
+- 新增时 word、common_form、hiragana、meaning 都必须是非空字符串；缺失、null、
+  空字符串或纯空白字符串均报错，不自动补填。update 遇到不存在的单词时也适用此要求。
+- 修改已有单词时，只更新 common_form、hiragana、meaning 中传入了有效值的字段。
+  未传入、null、空字符串或纯空白字符串均忽略，不报错、不清空原值；无有效修改字段则跳过。
+- 省略整个 operation 时默认 create；传入 operation 时必须且只能包含合法的 action。
+  operation 仅控制本次操作，不存入单词表。
+- 按 word 原文精确匹配，包括已标记删除的记录。本工具不修改 word，也不改变记录状态。
+- text 必须是非空数组。只接受上述字段及嵌套结构。同批重复 word 的所有项均失败，
+  其他词继续处理。字段类型错误或未知字段均报错。JSON 不得包含重复键。
+- 每项独立处理，单项失败不影响其他项；返回 results 数组，按输入顺序包含
+  index（从 0 开始）、word、status：created（已新增）、updated（已修改）、
+  skipped（已跳过）或 failed（失败）。跳过和失败时附 reason；缺少新增信息时附 fields。
+- text 格式错误、无法连接数据库或查询已有单词失败时返回工具错误。
+"""
 
-    处理策略：
-    - 确保入参类型为字符串（理论上 FastMCP 已做基础校验，这里再做防御式校验）。
-    - 去掉首尾空白字符，避免把纯空白文本写入记忆。
-    - 解析失败时抛出 ValueError，由工具层统一转成友好错误信息。
-    """
-    if not isinstance(text, str):
-        raise ValueError("update_memory 的参数 text 必须是字符串。")
-
-    normalized = text.strip()
-    if not normalized:
-        raise ValueError("update_memory 的参数 text 不能为空。")
-
-    return normalized
-
-
-def parse_query_text(text: str) -> str:
-    """
-    解析 query_memory 的输入文本。
-
-    说明：
-    - 当前 demo 虽然返回固定字符串，但依然对输入做基础解析，
-      这样后续替换为真实逻辑时无需改接口行为。
-    """
-    if not isinstance(text, str):
-        raise ValueError("query_memory 的参数 text 必须是字符串。")
-
-    normalized = text.strip()
-    if not normalized:
-        raise ValueError("query_memory 的参数 text 不能为空。")
-
-    return normalized
+mcp = FastMCP(name="thoth-words", strict_input_validation=True)
 
 
-def load_memory() -> dict[str, Any]:
-    """
-    从本地 JSON 文件加载记忆数据。
-
-    异常友好处理：
-    - 文件不存在：返回默认空结构，不报错。
-    - JSON 损坏：抛出 ValueError，提示文件格式异常。
-    - 数据结构非法（不是对象）：抛出 ValueError。
-    """
-    if not MEMORY_FILE_PATH.exists():
-        return {}
-
+@mcp.tool(description=SAVE_WORDS_DESCRIPTION)
+def save_words(text: str) -> dict[str, list[dict[str, Any]]]:
+    """解析输入后调用业务层，向 MCP 返回结构化的逐项结果。"""
     try:
-        raw_data = MEMORY_FILE_PATH.read_text(encoding="utf-8")
-        parsed = json.loads(raw_data)
-    except json.JSONDecodeError as exc:
-        raise ValueError("记忆文件 JSON 格式损坏，无法解析。") from exc
-    except OSError as exc:
-        raise ValueError(f"读取记忆文件失败：{exc}") from exc
-
-    if not isinstance(parsed, dict):
-        raise ValueError("记忆文件内容结构非法，必须是 JSON 对象。")
-
-    return parsed
-
-
-def save_memory(memory_data: dict[str, Any]) -> None:
-    """
-    将记忆数据保存到本地 JSON 文件。
-
-    处理策略：
-    - 使用 ensure_ascii=False，便于直接保存中文文本。
-    - 出错时抛出 ValueError，让工具层返回友好提示。
-    """
-    try:
-        serialized = json.dumps(memory_data, ensure_ascii=False, indent=2)
-        MEMORY_FILE_PATH.write_text(serialized + "\n", encoding="utf-8")
-    except OSError as exc:
-        raise ValueError(f"写入记忆文件失败：{exc}") from exc
-
-
-def set_memory(text: str) -> str:
-    """
-    写入记忆内容，并返回本次更新文本。
-
-    当前 demo 仅保存最后一次写入值到 key: latest_update。
-    """
-    memory_data = load_memory()
-    memory_data["latest_update"] = text
-    save_memory(memory_data)
-    return text
-
-
-def get_memory(_query_text: str) -> str:
-    """
-    查询记忆内容。
-
-    注意：
-    - 按当前需求，返回固定写死字符串。
-    - 仍保留函数分层，方便未来接入真实检索逻辑。
-    """
-    return FIXED_QUERY_RESPONSE
-
-
-@mcp.tool
-def update_memory(text: str) -> str:
-    """
-    MCP 工具：更新记忆。
-
-    入参：
-    - text: 一段自然语言文本。
-    返回：
-    - 本次 update 的文本内容（字符串）。
-    """
-    try:
-        parsed_text = parse_update_text(text)
-        return set_memory(parsed_text)
-    except ValueError as exc:
-        # 统一返回友好错误，避免抛出原始堆栈到协议层。
-        return f"update_memory 执行失败：{exc}"
-
-
-@mcp.tool
-def query_memory(text: str) -> str:
-    """
-    MCP 工具：查询记忆。
-
-    入参：
-    - text: 一段自然语言文本（当前 demo 仅做校验，不参与查询）。
-    返回：
-    - 固定写死字符串。
-    """
-    try:
-        parsed_text = parse_query_text(text)
-        return get_memory(parsed_text)
-    except ValueError as exc:
-        return f"query_memory 执行失败：{exc}"
+        items = parse_words_text(text)
+        settings = get_settings()
+        with open_connection(settings) as connection:
+            repository = WordRepository(connection, operator=settings.operator)
+            return save_word_batch(items, repository)
+    except (ValueError, DatabaseError) as exc:
+        raise ToolError(str(exc)) from exc
 
 
 if __name__ == "__main__":
-    # 使用 stdio 传输，便于被 Cursor MCP 直接拉起并通信。
-    # 关闭 banner，减少非协议输出，避免干扰客户端解析。
-    # 将日志级别压到 ERROR，减少普通 INFO 输出污染标准输出的风险。
     mcp.run(transport="stdio", show_banner=False, log_level="ERROR")
