@@ -215,34 +215,72 @@ def _database_error(message: str, exc: psycopg.Error) -> DatabaseError:
     return DatabaseError(f"{message}{code}，请稍后重试。")
 
 
-def _save_word_record(
-    request: WordInput, repository: WordTblMapper, *, exists: bool
-) -> SaveResult:
-    """在当前事务内决定新增、更新或跳过，处理批量查重后的并发新增和外部删除。
+def _validate_new_word_fields(entity: WordEntity) -> None:
+    """检查已归一化的新增信息，None 表示未提供，缺失时抛出 MissingWordFieldsError。"""
+    missing = tuple(
+        name for name in INFORMATION_FIELDS
+        if getattr(entity, name) is None
+    )
+    if missing:
+        raise MissingWordFieldsError(missing)
 
-    标签已由调用方验证存在；exists 仅表示批量读取结果，不保证记录仍存在。
-    更新取得的单词行锁必须持有至标签替换完成，防止并发替换混合标签集合。
+
+def _insert_word_record(
+    entity: WordEntity, repository: WordTblMapper
+) -> SaveResult | None:
+    """在当前事务内校验新增字段并插入，成功返回 created，同名并发冲突返回 None。
+
+    create 和 update 的首次新增共用此流程；字段缺失或数据库错误向上传递，
+    冲突后的跳过或更新由调用方按业务场景决定。
     """
-    if exists and request.action == "create":
-        return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
-    if not exists:
-        missing = tuple(
-            name for name in INFORMATION_FIELDS
-            if getattr(request.entity, name) is None
-        )
-        if missing:
-            raise MissingWordFieldsError(missing)
-        inserted = repository.insert(request.entity)
-        if inserted is not None:
-            return SaveResult("created", entity=inserted)
-        # 查重后并发新增仍遵守 create 不覆盖、update 合并字段的规则。
-        if request.action == "create":
-            return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
+    _validate_new_word_fields(entity)
+    inserted = repository.insert(entity)
+    if inserted is None:
+        return None
+    return SaveResult("created", entity=inserted)
+
+
+def _update_word_record(entity: WordEntity, repository: WordTblMapper) -> SaveResult:
+    """在当前事务内局部更新并返回 updated，未更新到记录时抛出 DatabaseError。
+
+    None 信息字段保留原值；取得的单词行锁须持有至标签替换完成，
+    防止并发替换混合标签集合。
+    """
     # 仅修改标签也执行 UPDATE，更新审计字段并取得单词行锁。
-    updated = repository.update(request.entity)
+    updated = repository.update(entity)
     if updated is None:
         raise DatabaseError("保存期间单词记录发生变化，请重试。")
     return SaveResult("updated", entity=updated)
+
+
+def _save_word_record(
+    request: WordInput, repository: WordTblMapper, *, exists: bool
+) -> SaveResult:
+    """在当前事务内按 create、update 场景分别编排新增、更新和跳过。
+
+    request 已通过输入和标签校验，action 只会是 create 或 update。
+    exists 是批量查重时的存在性；实际插入冲突仍须按各场景处理。
+    """
+    if request.action == "create":
+        if exists:
+            return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
+        else:
+            inserted = _insert_word_record(request.entity, repository)
+            if inserted is None:
+                # 并发新增冲突时跳过，不覆盖已有记录。
+                return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
+            else:
+                return inserted
+    else: # update
+        if exists:
+            return _update_word_record(request.entity, repository)
+        else:
+            inserted = _insert_word_record(request.entity, repository)
+            if inserted is None:
+                # 并发新增冲突时，按 update 语义更新当前记录。
+                return _update_word_record(request.entity, repository)
+            else:
+                return inserted
 
 
 def _save_word_item(
