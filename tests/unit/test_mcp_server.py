@@ -13,27 +13,31 @@ from fastmcp import Client
 from thoth.tools import mcp_tools as mcp_server
 from thoth.service import save_words_service
 from thoth.db.connection import DatabaseError
-from thoth.dao.word_tbl_mapper import MissingWordFieldsError
-from thoth.dto.word import SaveResult
-from thoth.entity import WordEntity
+from thoth.service.save_words_service import MissingWordFieldsError
+from thoth.entity import WordEntity, TagEntity
 
 
 @pytest.fixture
 def backend(monkeypatch):
     settings = SimpleNamespace(operator="test-operator")
     get_settings = Mock(return_value=settings)
-    connection = object()
+    connection = MagicMock()
     connection_context = MagicMock()
     connection_context.__enter__.return_value = connection
     open_connection = Mock(return_value=connection_context)
     repository = Mock(
         find_existing_words=Mock(return_value=[]),
-        save=Mock(return_value=SaveResult(status="created")),
+        insert=Mock(return_value=WordEntity(id=1)),
+        update=Mock(return_value=WordEntity(id=1)),
     )
     repository_factory = Mock(return_value=repository)
     monkeypatch.setattr(save_words_service, "get_settings", get_settings)
     monkeypatch.setattr(save_words_service, "open_connection", open_connection)
     monkeypatch.setattr(save_words_service, "WordTblMapper", repository_factory)
+    monkeypatch.setattr(save_words_service, "TagTblMapper", Mock(return_value=Mock(
+        find_by_codes=Mock(side_effect=lambda codes: [TagEntity(code=code) for code in codes])
+    )))
+    monkeypatch.setattr(save_words_service, "WordTagTblMapper", Mock())
     return SimpleNamespace(
         settings=settings, get_settings=get_settings, open_connection=open_connection,
         connection=connection, repository=repository, repository_factory=repository_factory,
@@ -79,7 +83,7 @@ def test_only_save_words_is_exposed_and_description_explains_default(backend):
     description = tool.description
     assert "operation" in description
     assert "省略" in description and "默认" in description and "create" in description
-    for field in ("word", "common_form", "hiragana", "meaning", "action"):
+    for field in ("word", "common_form", "hiragana", "meaning", "action", "tags"):
         assert field in description
     backend.get_settings.assert_not_called()
     backend.open_connection.assert_not_called()
@@ -94,17 +98,14 @@ def test_invalid_json_is_protocol_error_before_database_access(backend, text):
 
 
 def test_tool_returns_structured_per_word_results(backend):
-    backend.repository.save.return_value = SaveResult(
-        status="created",
-        entity=WordEntity(
-            id=1, word="食べる", common_form="食べる", hiragana="たべる", meaning="吃",
-            status_code="A", created_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
-            created_by="test-operator", updated_by="test-operator",
-        ),
+    backend.repository.insert.return_value = WordEntity(
+        id=1, word="食べる", common_form="食べる", hiragana="たべる", meaning="吃",
+        status_code="A", created_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+        created_by="test-operator", updated_by="test-operator",
     )
     result = call_save_words(json.dumps([
-        {"word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
-        {"word": "飲む", "operation": {"action": "delete"}},
+        {"tags": ["v"], "word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
+        {"tags": ["v"], "word": "飲む", "operation": {"action": "delete"}},
     ]))
 
     assert result.isError is False
@@ -121,31 +122,26 @@ def test_tool_returns_structured_per_word_results(backend):
     backend.open_connection.assert_called_once_with(backend.settings)
     backend.repository_factory.assert_called_once_with(backend.connection, operator="test-operator")
     backend.repository.find_existing_words.assert_called_once_with(["食べる"])
-    backend.repository.save.assert_called_once_with(
+    backend.repository.insert.assert_called_once_with(
         WordEntity(word="食べる", common_form="食べる", hiragana="たべる", meaning="吃"),
-        action="create", exists=False,
     )
 
 
 def test_tool_serializes_optional_reason_and_missing_fields_only_when_present(backend):
     missing_fields = MissingWordFieldsError(("common_form", "hiragana"))
     backend.repository.find_existing_words.return_value = [WordEntity(word="食べる")]
-    backend.repository.save.side_effect = [
-        SaveResult(status="skipped", reason="单词已存在。"),
-        missing_fields,
-        SaveResult(status="created"),
-    ]
+
 
     result = call_save_words(json.dumps([
-        {"word": "食べる"},
-        {"word": "飲む", "meaning": "喝"},
-        {"word": "走る", "common_form": "走る", "hiragana": "はしる", "meaning": "跑"},
+        {"tags": ["v"], "word": "食べる"},
+        {"tags": ["v"], "word": "飲む", "meaning": "喝"},
+        {"tags": ["v"], "word": "走る", "common_form": "走る", "hiragana": "はしる", "meaning": "跑"},
     ]))
 
     assert result.isError is False
     assert result.structuredContent == {
         "results": [
-            {"index": 0, "word": "食べる", "status": "skipped", "reason": "单词已存在。"},
+            {"index": 0, "word": "食べる", "status": "skipped", "reason": "单词已存在，未覆盖已有信息。"},
             {
                 "index": 1, "word": "飲む", "status": "failed",
                 "reason": str(missing_fields), "fields": ["common_form", "hiragana"],
@@ -157,7 +153,7 @@ def test_tool_serializes_optional_reason_and_missing_fields_only_when_present(ba
 
 def test_database_connection_failure_is_protocol_error(backend):
     backend.open_connection.side_effect = DatabaseError("连接 PostgreSQL 失败，请检查配置。")
-    result = call_save_words('[{"word":"食べる"}]')
+    result = call_save_words('[{"tags": ["v"], "word":"食べる"}]')
     assert result.isError is True
     assert "连接 PostgreSQL 失败" in str(result)
     backend.repository_factory.assert_not_called()
@@ -166,20 +162,20 @@ def test_database_connection_failure_is_protocol_error(backend):
 def test_batch_lookup_failure_is_protocol_error_without_writes(backend):
     backend.repository.find_existing_words.side_effect = DatabaseError("查询单词失败，请稍后重试。")
     result = call_save_words(json.dumps([
-        {"word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
-        {"word": "飲む", "meaning": "喝", "operation": {"action": "update"}},
+        {"tags": ["v"], "word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
+        {"tags": ["v"], "word": "飲む", "meaning": "喝", "operation": {"action": "update"}},
     ]))
 
     assert result.isError is True
     assert "查询单词失败" in str(result)
     backend.repository.find_existing_words.assert_called_once_with(["食べる", "飲む"])
-    backend.repository.save.assert_not_called()
+    backend.repository.insert.assert_not_called()
 
 
 def test_surrogate_word_returns_serializable_failure_without_disrupting_valid_word(backend):
     result = call_save_words(json.dumps([
-        {"word": "\ud800"},
-        {"word": "飲む", "common_form": "飲む", "hiragana": "のむ", "meaning": "喝"},
+        {"tags": ["v"], "word": "\ud800"},
+        {"tags": ["v"], "word": "飲む", "common_form": "飲む", "hiragana": "のむ", "meaning": "喝"},
     ]))
 
     assert result.isError is False
@@ -189,13 +185,13 @@ def test_surrogate_word_returns_serializable_failure_without_disrupting_valid_wo
     assert rows[0]["index"] == 0
     json.dumps(result.structuredContent, ensure_ascii=False).encode("utf-8")
     backend.repository.find_existing_words.assert_called_once_with(["飲む"])
-    backend.repository.save.assert_called_once()
-    assert backend.repository.save.call_args.args[0].word == "飲む"
+    backend.repository.insert.assert_called_once()
+    assert backend.repository.insert.call_args.args[0].word == "飲む"
 
 
 def test_configuration_failure_is_protocol_error(backend):
     backend.get_settings.side_effect = ValueError("缺少 THOTH_PG_DSN。")
-    result = call_save_words('[{"word":"食べる"}]')
+    result = call_save_words('[{"tags": ["v"], "word":"食べる"}]')
     assert result.isError is True
     assert "THOTH_PG_DSN" in str(result)
     backend.open_connection.assert_not_called()
@@ -204,7 +200,20 @@ def test_configuration_failure_is_protocol_error(backend):
 def test_text_parameter_does_not_accept_array(backend):
     async def run():
         async with Client(mcp_server.mcp) as client:
-            return await client.call_tool_mcp("save_words", {"text": [{"word": "食べる"}]})
+            return await client.call_tool_mcp("save_words", {"text": [{"tags": ["v"], "word": "食べる"}]})
     result = asyncio.run(run())
     assert result.isError is True
     backend.get_settings.assert_not_called()
+
+
+@pytest.mark.parametrize("tags", [None, [], [""]])
+def test_required_tags_failure_is_per_item_and_does_not_save(backend, tags):
+    result = call_save_words(json.dumps([{
+        "word": "食べる", "tags": tags, "operation": {"action": "update"},
+    }]))
+    assert result.isError is False
+    row, = result.structuredContent["results"]
+    assert row["status"] == "failed" and "tags" in row["reason"]
+    backend.repository.find_existing_words.assert_not_called()
+    backend.repository.insert.assert_not_called()
+    backend.repository.update.assert_not_called()

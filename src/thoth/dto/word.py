@@ -17,6 +17,8 @@ class WordInput:
 
     # 单词记录；有效输入保留本次提供的字段，错误项仅保留可输出的 word。
     entity: WordEntity
+    # 完整的新标签编码集合；有效请求至少一个且已去重，错误项默认为空。
+    tags: tuple[str, ...] = ()
     # create 表示不覆盖已有词，update 表示局部更新；未传 operation 时默认 create。
     action: Literal["create", "update"] = "create"
     # 逐项输入错误；None 表示输入校验通过，仍需检查批内重复和保存条件。
@@ -49,7 +51,7 @@ class WordBatchResult:
 
 @dataclass(frozen=True, slots=True)
 class SaveResult:
-    """承载一次 DAO 保存的结果，交由业务层转换为逐项对外响应。"""
+    """承载 Service 编排保存的结果，供业务层转换为逐项对外响应。"""
 
     # created 表示已新增，updated 表示已修改，skipped 表示本次没有写入。
     status: Literal["created", "updated", "skipped"]

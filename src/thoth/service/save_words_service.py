@@ -3,35 +3,40 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from typing import Any, Literal
 
+import psycopg
 from fastmcp.exceptions import ToolError
 
 from thoth.common.config import get_settings
-from thoth.dao.word_tbl_mapper import MissingWordFieldsError, WordTblMapper
+from thoth.dao.tag_tbl_mapper import TagTblMapper
+from thoth.dao.word_tag_tbl_mapper import WordTagTblMapper
+from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.db.connection import DatabaseError, open_connection
-from thoth.dto.word import WordBatchResult, WordInput, WordItemResult
-from thoth.entity import WordEntity
+from thoth.dto.word import SaveResult, WordBatchResult, WordInput, WordItemResult
+from thoth.entity import WordEntity, WordTagEntity
 from thoth.utils.json_utils import reject_json_constant, unique_json_object
 
 INFORMATION_FIELDS = ("common_form", "hiragana", "meaning")
-ALLOWED_FIELDS = {"word", *INFORMATION_FIELDS, "operation"}
+ALLOWED_FIELDS = {"word", *INFORMATION_FIELDS, "operation", "tags"}
 
 
 def save_words(text: str) -> dict[str, list[dict[str, Any]]]:
     """解析单词 JSON 数组并保存，按输入顺序返回 results。
 
     单项失败保留在结果中；格式、配置、连接或批量查询失败抛出 ToolError。
-    本次调用共用一条连接，结束时关闭；每项写入由 DAO 独立提交或回滚。
+    本次调用共用一条连接，结束时关闭；每项单词及标签写入由 Service 独立提交或回滚。
     """
     try:
         # 先解析，格式错误时不读取配置或连接数据库。
         items = parse_words_text(text)
         settings = get_settings()
         with open_connection(settings) as connection:
-            repository = WordTblMapper(connection, operator=settings.operator)
-            return serialize_word_batch(save_word_batch(items, repository))
+            return serialize_word_batch(
+                save_word_batch(items, connection, operator=settings.operator)
+            )
     except (ValueError, DatabaseError) as exc:
         # 保持整批错误的对外语义，数据库错误已由底层脱敏。
         raise ToolError(str(exc)) from exc
@@ -100,7 +105,8 @@ def validate_word_input(item: Any) -> WordInput:
     """校验单项字段、操作和文本类型，返回包含 WordEntity 的请求对象。
 
     非法输入抛出 ValueError。信息字段缺失、null 或纯空白归一为 None，
-    表示更新时忽略；实际新增所需的完整性由 DAO 检查。此函数不访问数据库。"""
+    表示更新时忽略；tags 必须是非空数组并按首次出现去重。
+    实际新增所需的完整性与标签存在性由保存流程检查。此函数不访问数据库。"""
     if not isinstance(item, dict):
         raise ValueError("每项必须是单词对象。")
     unknown = set(item) - ALLOWED_FIELDS
@@ -121,7 +127,18 @@ def validate_word_input(item: Any) -> WordInput:
             meaning=_information_value(item, "meaning"),
         ),
         action=action,
+        tags=_validate_tags(item.get("tags")),
     )
+
+
+def _validate_tags(value: Any) -> tuple[str, ...]:
+    """校验必填非空标签数组并按首次出现去重；不改大小写或空格，不查询数据库。"""
+    if not isinstance(value, list) or not value:
+        raise ValueError("tags 必填，且必须是至少包含一个标签编码的非空数组。")
+    for code in value:
+        if not isinstance(code, str) or re.fullmatch(r"[A-Za-z0-9_]{1,32}", code) is None:
+            raise ValueError("tags 中每个编码必须是 1～32 位英文字母、数字或下划线组成的字符串。")
+    return tuple(dict.fromkeys(value))
 
 
 def _information_value(item: dict[str, Any], name: str) -> str | None:
@@ -182,53 +199,140 @@ def _prepare_word_items(
     return prepared
 
 
-def _save_word_item(
-    request: WordInput, repository: WordTblMapper, *, index: int, exists: bool
-) -> WordItemResult:
-    """将有效请求交给 DAO 保存，以原始 index 返回单项结果。
+class MissingWordFieldsError(ValueError):
+    """Service 在实际新增前报告缺失的信息字段。"""
 
-    exists 是批量查询时的存在性。缺少新增字段、ValueError 和 DatabaseError
-    转为 failed，缺失字段保留在 fields；其他异常继续向上传播。"""
-    # 将同一个 entity 交给 DAO；单项预期失败只影响当前结果，不中断后续项。
+    def __init__(self, fields: tuple[str, ...]) -> None:
+        """保留缺失字段的顺序，供 MCP 响应输出 fields。"""
+        # 新增必填但未提供有效值的信息字段名。
+        self.fields = fields
+        super().__init__(f"需要新增单词，但以下字段缺失或为空：{', '.join(fields)}。")
+
+
+def _database_error(message: str, exc: psycopg.Error) -> DatabaseError:
+    """构造脱敏数据库错误，仅保留场景和 SQLSTATE，不暴露 SQL、参数或连接信息。"""
+    code = f"（SQLSTATE {exc.sqlstate}）" if exc.sqlstate else ""
+    return DatabaseError(f"{message}{code}，请稍后重试。")
+
+
+def _save_word_record(
+    request: WordInput, repository: WordTblMapper, *, exists: bool
+) -> SaveResult:
+    """在当前事务内决定新增、更新或跳过，处理批量查重后的并发新增和外部删除。
+
+    标签已由调用方验证存在；exists 仅表示批量读取结果，不保证记录仍存在。
+    更新取得的单词行锁必须持有至标签替换完成，防止并发替换混合标签集合。
+    """
+    if exists and request.action == "create":
+        return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
+    if not exists:
+        missing = tuple(
+            name for name in INFORMATION_FIELDS
+            if getattr(request.entity, name) is None
+        )
+        if missing:
+            raise MissingWordFieldsError(missing)
+        inserted = repository.insert(request.entity)
+        if inserted is not None:
+            return SaveResult("created", entity=inserted)
+        # 查重后并发新增仍遵守 create 不覆盖、update 合并字段的规则。
+        if request.action == "create":
+            return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
+    # 仅修改标签也执行 UPDATE，更新审计字段并取得单词行锁。
+    updated = repository.update(request.entity)
+    if updated is None:
+        raise DatabaseError("保存期间单词记录发生变化，请重试。")
+    return SaveResult("updated", entity=updated)
+
+
+def _save_word_item(
+    request: WordInput,
+    repository: WordTblMapper,
+    tag_mapper: TagTblMapper,
+    word_tag_mapper: WordTagTblMapper,
+    connection: psycopg.Connection,
+    *,
+    index: int,
+    exists: bool,
+    operator: str,
+) -> WordItemResult:
+    """以单个单词为事务边界保存信息和完整标签列表，提交后才返回成功。
+
+    标签缺失、必填字段缺失、驱动或提交失败先回滚再转为 failed；其他异常向上
+    传播但仍回滚。各 Mapper 使用同一连接，任何关联插入失败均恢复原单词及旧标签。
+    """
     try:
-        saved = repository.save(
-            request.entity, action=request.action, exists=exists
+        with connection.transaction():
+            # 即使 create 将跳过已有词，也要求传入的标签全部合法且存在。
+            existing_tags = {
+                tag.code for tag in tag_mapper.find_by_codes(list(request.tags))
+            }
+            missing_tags = [code for code in request.tags if code not in existing_tags]
+            if missing_tags:
+                raise ValueError(f"标签不存在：{', '.join(missing_tags)}。请使用已有的合适标签。")
+            saved = _save_word_record(request, repository, exists=exists)
+            if saved.status != "skipped":
+                if saved.entity is None or saved.entity.id is None:
+                    raise DatabaseError("保存单词未返回有效 ID，请重试。")
+                # 一律删除后重建，不做差量合并；删除及所有插入与单词写入共同回滚。
+                word_id = saved.entity.id
+                word_tag_mapper.delete_by_word_id(word_id)
+                word_tag_mapper.insert_many([
+                    WordTagEntity(
+                        word_id=word_id, tag_code=code,
+                        created_by=operator, updated_by=operator,
+                    )
+                    for code in request.tags
+                ])
+        return WordItemResult(
+            index=index, word=request.entity.word,
+            status=saved.status, reason=saved.reason,
         )
     except MissingWordFieldsError as exc:
         return WordItemResult(
             index=index, word=request.entity.word, status="failed",
-            reason=str(exc), fields=tuple(exc.fields),
+            reason=str(exc), fields=exc.fields,
         )
-    except (ValueError, DatabaseError) as exc:
+    except (ValueError, DatabaseError, psycopg.Error) as exc:
+        # 必须在 transaction 上下文退出后转换错误，避免吞掉异常而提交部分修改。
+        error = (
+            _database_error("保存单词及标签失败", exc)
+            if isinstance(exc, psycopg.Error) else exc
+        )
         return WordItemResult(
-            index=index, word=request.entity.word, status="failed", reason=str(exc)
+            index=index, word=request.entity.word, status="failed", reason=str(error)
         )
-    return WordItemResult(
-        index=index, word=request.entity.word, status=saved.status, reason=saved.reason
-    )
 
 
 def save_word_batch(
-    items: list[WordInput], repository: WordTblMapper
+    items: list[WordInput], connection: psycopg.Connection,
+    *, operator: str = "THOTH_MCP",
 ) -> WordBatchResult:
-    """批量查询有效词后逐项保存，按输入顺序返回结果。
+    """批量查询有效词，再在同一连接上逐项开启独立事务保存单词及标签。
 
-    items 为已解析的请求；空列表或全部无效时不访问 DAO。
-    重复项与输入错误直接失败；单项保存失败不影响后续项。
-    批量查询失败抛出 DatabaseError，此时尚未写入任何项。"""
-    # 先固定每个输入的位置并隔离失败项，查询范围仅包含允许继续保存的单词。
+    items 为 parse_words_text 校验后的请求；空列表或全部无效时不访问数据库。
+    connection 必须启用 autocommit 且没有外层事务，保证每项能独立提交。
+    operator 同时用于单词和关联表的审计字段。
+    批量查询失败抛出 DatabaseError，尚未写入；单项失败则保留结果并继续下一项。
+    """
+    repository = WordTblMapper(connection, operator=operator)
+    tag_mapper = TagTblMapper(connection)
+    word_tag_mapper = WordTagTblMapper(connection)
     prepared = _prepare_word_items(items)
     words = [
         word for item in prepared
         if isinstance(item, WordInput) and (word := item.entity.word) is not None
     ]
-    existing_words = {
-        entity.word for entity in repository.find_existing_words(words)
-    } if words else set()
-    # 沿原顺序合并预先生成的失败结果和保存结果，保证 index 与请求一一对应。
+    try:
+        existing_words = {
+            entity.word for entity in repository.find_existing_words(words)
+        } if words else set()
+    except psycopg.Error as exc:
+        raise _database_error("查询已有单词失败", exc) from exc
     return WordBatchResult(results=[
         item if isinstance(item, WordItemResult) else _save_word_item(
-            item, repository, index=index, exists=item.entity.word in existing_words
+            item, repository, tag_mapper, word_tag_mapper, connection,
+            index=index, exists=item.entity.word in existing_words, operator=operator,
         )
         for index, item in enumerate(prepared)
     ])
