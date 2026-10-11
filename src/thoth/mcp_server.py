@@ -1,9 +1,9 @@
-"""MCP 启动模块：加载已注册的单词工具，并以 stdio 运行服务。
+"""MCP 启动模块：加载统一注册的工具，并以 stdio 运行服务。
 
 导入时只完成工具注册；配置读取和数据库连接在实际工具调用时进行。
 """
 
-from thoth.tools.word_tools import mcp
+from thoth.tools.mcp_tools import mcp
 
 
 if __name__ == "__main__":

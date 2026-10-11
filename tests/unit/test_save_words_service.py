@@ -10,7 +10,7 @@ from thoth.dao.word_tbl_mapper import MissingWordFieldsError
 from thoth.dto.word import SaveResult
 from thoth.entity import WordEntity
 from thoth.dto.word import WordInput
-from thoth.service.word_service import parse_words_text, save_word_batch, serialize_word_batch
+from thoth.service.save_words_service import parse_words_text, save_word_batch, serialize_word_batch
 
 
 @pytest.fixture

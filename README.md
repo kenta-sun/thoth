@@ -70,8 +70,9 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 单独�
 六张表均有对应的 entity，字段名称和基础类型对应表结构。entity 只是数据容器，所有字段均允许为 `None`、默认值为 `None`，支持空对象和局部赋值，不包含非空或业务校验。JSON 输入校验和新增必填检查保留在实体之外，数据库继续负责表约束及 ID、状态和时间戳等默认值。业务层通过对象传递记录和结果，仅在 JSON 输入输出及 SQL 参数绑定边界使用字典。
 
 - `mcp_server.py`：启动 stdio MCP 服务，加载工具注册；启动命令保持不变。
-- `tools/word_tools.py`：FastMCP 工具注册、AI 可见说明和请求入口。
-- `service/word_service.py`：JSON 与对象的转换、业务输入校验和批量保存流程。
+- `tools/mcp_tools.py`：统一注册所有 MCP 工具，入口仅调用对应 Service。
+- `descriptions/save_words_descriptions.py`：AI 可见的 save_words 工具说明；每个工具按完整工具名独立命名说明文件。
+- `service/save_words_service.py`：save_words MCP 工具专属的完整保存流程，包括解析校验、配置读取、连接管理、批量保存、响应转换和错误处理。
 - `dao/` 按一张表一个 `<表名>_mapper.py` 文件组织，尚无数据访问 SQL 的表暂不创建 mapper。
 - `dao/word_tbl_mapper.py`：`WordTblMapper` 封装固定 SQL、实体行映射、保存分支与逐项事务。
 - `entity/`：六张表各自的实体定义，不承担校验。

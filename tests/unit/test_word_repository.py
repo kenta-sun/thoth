@@ -15,7 +15,7 @@ from thoth.dao import word_tbl_mapper as word_repo
 from thoth.db.connection import DatabaseError
 from thoth.dao.word_tbl_mapper import MissingWordFieldsError, WordTblMapper
 from thoth.entity import WordEntity
-from thoth.service.word_service import parse_words_text, save_word_batch, serialize_word_batch
+from thoth.service.save_words_service import parse_words_text, save_word_batch, serialize_word_batch
 
 CREATED_AT = datetime(2026, 10, 9, 12, tzinfo=timezone.utc)
 UPDATED_AT = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)

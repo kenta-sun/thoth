@@ -1,22 +1,5 @@
-"""MCP 协议入口：将 save_words 工具调用交给单词业务层。
+"""save_words 工具的对外说明，供统一入口注册时使用。"""
 
-一次调用依次完成 JSON 解析、配置加载、打开连接、逐项保存和结果序列化。
-本层负责把整批失败转换为 MCP 工具错误；单项失败由业务层保留在 results 中。
-"""
-
-from __future__ import annotations
-
-from typing import Any
-
-from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
-
-from thoth.common.config import get_settings
-from thoth.db.connection import DatabaseError, open_connection
-from thoth.dao.word_tbl_mapper import WordTblMapper
-from thoth.service.word_service import parse_words_text, save_word_batch, serialize_word_batch
-
-# 这是 MCP 客户端和调用工具的 AI 能看到的接口说明；调整协议时需与业务实现同步。
 SAVE_WORDS_DESCRIPTION = """批量新增或修改日语单词，以 word 为唯一判重和更新定位依据。
 
 唯一参数 text 是 JSON 数组字符串，每个元素代表一个单词。以下展示解析后的结构，
@@ -50,34 +33,3 @@ text 不得包含 Markdown 标记或额外说明。
   skipped（已跳过）或 failed（失败）。跳过和失败时附 reason；缺少新增信息时附 fields。
 - text 格式错误、无法连接数据库或查询已有单词失败时返回工具错误。
 """
-
-# 在协议层拒绝类型不符的入参，例如直接把数组传给要求字符串的 text。
-mcp = FastMCP(name="thoth-words", strict_input_validation=True)
-
-
-@mcp.tool(description=SAVE_WORDS_DESCRIPTION)
-def save_words(text: str) -> dict[str, list[dict[str, Any]]]:
-    """处理一次批量保存调用，并管理本次调用所用的数据库连接。
-
-    Args:
-        text: 非空 JSON 数组字符串；具体字段与操作规则见工具说明。
-
-    Returns:
-        可由 MCP 输出为 JSON 的 results 数组，按输入顺序列出各项处理结果。
-        单项校验或保存失败仍返回正常工具响应，该项的 status 为 failed。
-
-    Raises:
-        ToolError: 整批 JSON 格式错误、配置错误、连接失败或批量查询失败。
-    """
-    try:
-        # 先解析再建立连接，整批格式错误时无需读取配置或访问数据库。
-        items = parse_words_text(text)
-        settings = get_settings()
-        # 同批复用一条连接；每项保存的事务由 DAO 管理，连接在退出 with 时关闭。
-        with open_connection(settings) as connection:
-            repository = WordTblMapper(connection, operator=settings.operator)
-            # 业务层传递结果对象，直到协议输出处才转换成规定形状的字典。
-            return serialize_word_batch(save_word_batch(items, repository))
-    except (ValueError, DatabaseError) as exc:
-        # 这里只处理会使整批无法继续的错误；数据库错误文本已经由连接/DAO 层脱敏。
-        raise ToolError(str(exc)) from exc

@@ -1,10 +1,4 @@
-"""单词业务层：解析 JSON、校验输入并组织批量保存。
-
-JSON 数组先转换为持有 WordEntity 的 WordInput；通过业务校验且不重复的
-单词集中查询存在性，随后逐项将 entity 交给 DAO 保存。业务结果以 WordItemResult、WordBatchResult
-传递，最后由 serialize_word_batch 转成 MCP 协议需要的 JSON 字典。
-entity 本身只承载数据，输入要求在本模块校验，新增完整性由 DAO 按实际分支判断。
-"""
+"""save_words MCP 工具的专属 Service：解析校验、管理连接、保存并返回结果。"""
 
 from __future__ import annotations
 
@@ -12,8 +6,11 @@ import json
 from collections import Counter
 from typing import Any, Literal
 
+from fastmcp.exceptions import ToolError
+
+from thoth.common.config import get_settings
 from thoth.dao.word_tbl_mapper import MissingWordFieldsError, WordTblMapper
-from thoth.db.connection import DatabaseError
+from thoth.db.connection import DatabaseError, open_connection
 from thoth.dto.word import WordBatchResult, WordInput, WordItemResult
 from thoth.entity import WordEntity
 from thoth.utils.json_utils import reject_json_constant, unique_json_object
@@ -22,23 +19,29 @@ INFORMATION_FIELDS = ("common_form", "hiragana", "meaning")
 ALLOWED_FIELDS = {"word", *INFORMATION_FIELDS, "operation"}
 
 
-def parse_words_text(text: str) -> list[WordInput]:
-    """在 JSON 输入边界构造 entity，并保留每项业务校验结果。
+def save_words(text: str) -> dict[str, list[dict[str, Any]]]:
+    """解析单词 JSON 数组并保存，按输入顺序返回 results。
 
-    先确认整批符合 JSON 数组协议，再逐项校验；单项失败仍占据原位置，
-    使后续批量保存可以继续处理其他项，并将错误返回给调用方。
-
-    Args:
-        text: 非空 JSON 数组字符串，每个元素应为单词对象。
-
-    Returns:
-        与原数组顺序一致的请求列表。有效项的 error 为 None；无效项的
-        error 为错误说明，entity 仅保留能够安全输出的原始 word。
-
-    Raises:
-        ValueError: 输入不是非空 JSON 数组、格式错误、含重复键或非标准
-            数值，或者嵌套层级过深。单项业务校验错误不会导致整批抛出。
+    单项失败保留在结果中；格式、配置、连接或批量查询失败抛出 ToolError。
+    本次调用共用一条连接，结束时关闭；每项写入由 DAO 独立提交或回滚。
     """
+    try:
+        # 先解析，格式错误时不读取配置或连接数据库。
+        items = parse_words_text(text)
+        settings = get_settings()
+        with open_connection(settings) as connection:
+            repository = WordTblMapper(connection, operator=settings.operator)
+            return serialize_word_batch(save_word_batch(items, repository))
+    except (ValueError, DatabaseError) as exc:
+        # 保持整批错误的对外语义，数据库错误已由底层脱敏。
+        raise ToolError(str(exc)) from exc
+
+
+def parse_words_text(text: str) -> list[WordInput]:
+    """解析非空 JSON 数组，返回与输入顺序一致的 WordInput 列表。
+
+    整批格式错误抛出 ValueError；单项错误写入 error 并保留可输出的 word，
+    不阻止其他项继续处理。重复键、非标准数值和过深嵌套均视为格式错误。"""
     if not isinstance(text, str) or not text.strip():
         raise ValueError("text 必须是非空 JSON 数组字符串。")
     try:
@@ -94,22 +97,10 @@ def _validate_database_text(name: str, value: str) -> None:
 
 
 def validate_word_input(item: Any) -> WordInput:
-    """执行单项输入校验，将允许的单词字段放入共用的 WordEntity。
+    """校验单项字段、操作和文本类型，返回包含 WordEntity 的请求对象。
 
-    本函数检查字段白名单、word、操作格式和文本类型，不访问数据库。
-    common_form、hiragana、meaning 可省略；只有 DAO 确定实际新增时，
-    才检查这些信息是否齐全，因而已有词的局部更新无需提供完整记录。
-
-    Args:
-        item: JSON 数组中的原始元素，预期为单词对象。
-
-    Returns:
-        error 为 None 的请求对象。信息字段缺失、为 null 或只有空白时
-        归一为 None，在局部更新中表示忽略该字段，不表示将数据库字段写空。
-
-    Raises:
-        ValueError: 元素不是对象、含不允许的字段，或字段值及操作格式非法。
-    """
+    非法输入抛出 ValueError。信息字段缺失、null 或纯空白归一为 None，
+    表示更新时忽略；实际新增所需的完整性由 DAO 检查。此函数不访问数据库。"""
     if not isinstance(item, dict):
         raise ValueError("每项必须是单词对象。")
     unknown = set(item) - ALLOWED_FIELDS
@@ -194,19 +185,10 @@ def _prepare_word_items(
 def _save_word_item(
     request: WordInput, repository: WordTblMapper, *, index: int, exists: bool
 ) -> WordItemResult:
-    """保存一个已通过输入及重复检查的请求，将预期保存异常转为失败结果。
+    """将有效请求交给 DAO 保存，以原始 index 返回单项结果。
 
-    Args:
-        request: 携带待保存 entity 和操作类型的有效请求。
-        repository: 执行实际数据库写入的 DAO；该调用可能新增或更新记录。
-        index: 请求在原数组中的下标，原样写入处理结果。
-        exists: 批量查询时该 word 是否已存在，供 DAO 选择保存分支。
-
-    Returns:
-        created、updated 或 skipped 结果；缺少新增字段、业务值错误和
-        DatabaseError 转为 failed，缺失字段异常还会携带 fields。
-        其他未预期异常继续向上传播，不被伪装成业务失败。
-    """
+    exists 是批量查询时的存在性。缺少新增字段、ValueError 和 DatabaseError
+    转为 failed，缺失字段保留在 fields；其他异常继续向上传播。"""
     # 将同一个 entity 交给 DAO；单项预期失败只影响当前结果，不中断后续项。
     try:
         saved = repository.save(
@@ -229,21 +211,11 @@ def _save_word_item(
 def save_word_batch(
     items: list[WordInput], repository: WordTblMapper
 ) -> WordBatchResult:
-    """一次查询有效单词是否存在，再逐项保存并返回与输入顺序一致的结果。
+    """批量查询有效词后逐项保存，按输入顺序返回结果。
 
-    Args:
-        items: 经 parse_words_text 或 validate_word_input 处理的请求；
-            可含带 error 的无效项，空列表返回空结果且不访问 DAO。
-        repository: 提供批量查询及单项保存的 DAO，负责实际数据库操作。
-
-    Returns:
-        包含每项成功、跳过或失败状态的批次结果。无效项和重复项不会写入；
-        全部项无效时也不查询数据库，正常项的预期保存失败不会阻止后续项。
-
-    Raises:
-        DatabaseError: 批量存在性查询失败；该查询位于所有写入之前，失败时
-            整批停止且尚未写入任何项。单项保存的数据库错误保留在结果中。
-    """
+    items 为已解析的请求；空列表或全部无效时不访问 DAO。
+    重复项与输入错误直接失败；单项保存失败不影响后续项。
+    批量查询失败抛出 DatabaseError，此时尚未写入任何项。"""
     # 先固定每个输入的位置并隔离失败项，查询范围仅包含允许继续保存的单词。
     prepared = _prepare_word_items(items)
     words = [
@@ -263,17 +235,10 @@ def save_word_batch(
 
 
 def serialize_word_batch(batch: WordBatchResult) -> dict[str, list[dict[str, Any]]]:
-    """在 JSON 输出边界转换结果对象，保持既有 MCP 响应结构。
+    """将批次结果转为 MCP 响应字典，不修改原对象。
 
-    Args:
-        batch: 业务层产生的批次结果，包含按原输入顺序排列的单项结果。
-
-    Returns:
-        以 results 为唯一顶层键的字典；每项保留 index、word、status，
-        word 为 None 时仍输出 null。reason、fields 仅在非 None 时输出，
-        fields 元组转换为 JSON 数组；空批次输出空 results 数组。
-        返回值不包含 entity、数据库主键或审计字段，也不修改原结果对象。
-    """
+    保留 index、word、status；word 为 None 时输出 null。
+    reason、fields 为 None 时省略，fields 元组转为数组；空批次返回空 results。"""
     results: list[dict[str, Any]] = []
     for item in batch.results:
         result: dict[str, Any] = {
