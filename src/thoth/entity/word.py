@@ -15,7 +15,7 @@ class WordEntity:
 
     id: int | None = None  # 单词主键；未显式指定时由数据库 identity 生成。
     word: str | None = None  # 单词基本形式；表内唯一，按原文判重和定位，包含已删除记录。
-    common_form: str | None = None  # 单词常用写法；新增业务要求调用方显式提供。
+    common_form: str | None = None  # 单词常用写法。
     hiragana: str | None = None  # 单词的平假名读音。
     meaning: str | None = None  # 单词的中文释义。
     status_code: str | None = None  # 关联 word_sts_tbl.code；A=正在使用，D=被删除，表默认 A。

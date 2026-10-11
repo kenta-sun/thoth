@@ -14,7 +14,7 @@ TEST_DSN = "postgresql://test_user:test_password@invalid.test/test_words"
 
 @pytest.fixture(autouse=True)
 def isolated_configuration(monkeypatch):
-    # 每个测试都屏蔽 .env 读取，且不使用调用环境中的数据库配置。
+    """屏蔽本地配置读取，隔离进程环境，并在每个测试前后清空配置缓存。"""
     monkeypatch.setattr(config, "_load_env_file", lambda: None)
     monkeypatch.setenv("THOTH_PG_DSN", TEST_DSN)
     monkeypatch.delenv("THOTH_OPERATOR", raising=False)
@@ -84,6 +84,7 @@ def test_settings_repr_omits_connection_credentials():
 
 @pytest.fixture
 def fake_connect(monkeypatch):
+    """替换驱动连接函数，返回可检查调用参数和关闭次数的模拟对象。"""
     connect = Mock(return_value=Mock())
     monkeypatch.setattr(connection_module.psycopg, "connect", connect)
     return connect

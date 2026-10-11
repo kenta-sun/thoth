@@ -1,7 +1,7 @@
 """数据库基础层负责按配置建立 PostgreSQL 连接，并在调用结束时关闭。
 
-MCP 入口通过 open_connection 获取连接后交给 DAO；连接启用 autocommit，
-每项写入的事务范围由 Service 显式管理。本模块不加载扩展，也不执行结构变更。
+Service 通过 open_connection 获取连接并交给各 Mapper；连接启用 autocommit，
+每项写入的事务范围由 Service 显式管理。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def open_connection(settings: Settings | None = None) -> Iterator[psycopg.Connec
         Service 用显式事务管理每项写入，本上下文不额外包裹整批事务。
 
     Raises:
-        ValueError: 未提供 settings 且配置层校验失败，原样交给入口处理。
+        ValueError: 未提供 settings 且配置层校验失败，原样交给调用方处理。
         DatabaseError: 建立连接时发生驱动错误，转换为不含连接详情的消息。
     """
     # 显式传入配置时直接复用；配置错误不混同为数据库连接错误。
@@ -55,5 +55,4 @@ def open_connection(settings: Settings | None = None) -> Iterator[psycopg.Connec
     try:
         yield connection
     finally:
-        # 无论调用方正常完成还是抛出异常，均释放连接资源。
         connection.close()

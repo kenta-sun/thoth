@@ -28,12 +28,13 @@ class WordTblMapper:
         FROM word_tbl
         WHERE word = ANY(%(words)s)
         """
+        # class_row 按结果列名构造实体，字段值由驱动完成数据库类型适配。
         with self._connection.cursor(row_factory=class_row(WordEntity)) as cursor:
             cursor.execute(sql, {"words": words})
             return cursor.fetchall()
 
     def insert(self, entity: WordEntity) -> WordEntity | None:
-        """在调用方事务内新增；返回数据库生成的实体，唯一键冲突时返回 None。"""
+        """在调用方事务内新增；返回含数据库生成值的实体，word 冲突时返回 None；其他驱动异常向上传递。"""
         # 仅写业务字段和操作者，id、状态和时间交给数据库默认值生成。
         # word 的唯一约束配合 ON CONFLICT 避免并发新增时覆盖原记录；
         # RETURNING 返回实际新增的完整行，发生冲突而未写入时不返回记录。

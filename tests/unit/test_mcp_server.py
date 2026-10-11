@@ -1,4 +1,4 @@
-"""Exercise the public FastMCP interface over its in-memory transport."""
+"""通过 FastMCP 内存传输验证工具注册、参数校验和协议响应。"""
 
 import asyncio
 import importlib
@@ -19,6 +19,7 @@ from thoth.entity import WordEntity, TagEntity
 
 @pytest.fixture
 def backend(monkeypatch):
+    """替换配置、连接和 Mapper，保留真实 Service 流程以验证 MCP 协议结果。"""
     settings = SimpleNamespace(operator="test-operator")
     get_settings = Mock(return_value=settings)
     connection = MagicMock()
@@ -45,6 +46,7 @@ def backend(monkeypatch):
 
 
 def call_save_words(text):
+    """通过内存客户端调用工具，返回包含结构化内容或工具错误的协议响应。"""
     async def run():
         async with Client(mcp_server.mcp) as client:
             return await client.call_tool_mcp("save_words", {"text": text})
@@ -57,7 +59,7 @@ def test_import_does_not_read_configuration_or_connect(monkeypatch):
 
     get_settings = Mock(side_effect=AssertionError("must not load real configuration"))
     open_connection = Mock(side_effect=AssertionError("must not connect during import"))
-    # reload resolves these imported names again, so patch their source modules too.
+    # reload 会重新绑定导入的符号，需在源模块替换配置读取和连接函数。
     with monkeypatch.context() as patch:
         patch.setattr(config, "get_settings", get_settings)
         patch.setattr(connection, "open_connection", open_connection)

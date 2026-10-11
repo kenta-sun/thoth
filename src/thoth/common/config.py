@@ -1,4 +1,4 @@
-"""公共配置模块：读取单词服务的运行配置，供 MCP 入口和数据库连接层使用。
+"""公共配置模块：读取单词服务的运行配置，供业务层和数据库连接层使用。
 
 首次调用 get_settings 时才读取本地配置和环境变量，并缓存解析后的 Settings。
 模块导入本身不加载配置、不连接数据库，便于 MCP 工具发现和单元测试。
@@ -14,7 +14,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 配置文件位置以项目目录为准，避免 MCP 客户端的启动目录影响配置读取。
-# 本模块位于 src/thoth/common，向上四级仍定位到项目根目录。
+# parents[3] 对应 src/thoth/common/config.py 所在的项目根目录。
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE_PATH = PROJECT_ROOT / ".env"
 
@@ -28,7 +28,7 @@ class Settings:
 
 
 def _load_env_file() -> None:
-    """保留本地配置文件支持，已设置的进程环境变量优先。"""
+    """加载项目根目录的配置文件，已设置的进程环境变量优先。"""
     load_dotenv(dotenv_path=ENV_FILE_PATH, override=False)
 
 
@@ -50,7 +50,7 @@ def load_settings() -> Settings:
         raise ValueError("未配置 THOTH_PG_DSN，请提供 PostgreSQL 连接字符串。")
 
     operator = os.getenv("THOTH_OPERATOR", "").strip() or "THOTH_MCP"
-    # 在业务入口报告可读的配置错误，避免每条写入都触发 VARCHAR(128) 超长错误。
+    # 在配置加载时报告可读的错误，避免每条写入都触发 VARCHAR(128) 超长错误。
     if len(operator) > 128:
         raise ValueError("THOTH_OPERATOR 不能超过 128 个字符。")
     return Settings(pg_dsn=pg_dsn, operator=operator)

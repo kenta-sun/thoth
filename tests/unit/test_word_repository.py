@@ -1,4 +1,4 @@
-"""覆盖实体行映射、局部更新、冲突处理与单项失败恢复。"""
+"""验证单词 Mapper 的实体行映射、参数绑定、局部更新和驱动异常传播。"""
 
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ class ScriptedConnection:
     def __init__(
         self, *responses: tuple[object, ...] | list[tuple[object, ...]] | None | Exception
     ) -> None:
+        """按 SQL 调用顺序保存预设响应，并初始化语句记录和事务计数。"""
         self.responses = iter(responses)
         self.statements: list[tuple[str, dict]] = []
         self.commits = 0
@@ -56,6 +57,7 @@ class ScriptedConnection:
 
     @contextmanager
     def transaction(self):
+        """按上下文是否抛出异常统计提交或回滚；不模拟数据库记录恢复和锁。"""
         try:
             yield
         except BaseException:
@@ -66,10 +68,12 @@ class ScriptedConnection:
 
     @contextmanager
     def cursor(self, *, row_factory=None):
+        """将连接自身作为模拟游标，并绑定 Mapper 传入的行构造器。"""
         self.row_factory = row_factory
         yield self
 
     def execute(self, query: str, params: dict) -> None:
+        """记录 SQL 及参数，消费一次响应，并构造真实行工厂所需的结果列元数据。"""
         self.statements.append((query, params.copy()))
         response = next(self.responses)
         if isinstance(response, Exception):
@@ -89,16 +93,19 @@ class ScriptedConnection:
             self.execute(query, params)
 
     def fetchone(self) -> WordEntity | None:
+        """将单行响应交给行构造器；None 表示 SQL 未返回记录。"""
         assert not isinstance(self.last_response, list)
         return None if self.last_response is None else self.make_row(self.last_response)
 
     def fetchall(self) -> list[WordEntity]:
+        """将多行响应逐条映射为实体；空列表表示没有匹配记录。"""
         assert isinstance(self.last_response, list)
         return [self.make_row(row) for row in self.last_response]
 
 
 @pytest.fixture
 def complete_entity() -> WordEntity:
+    """提供信息字段完整、尚无数据库生成值的新增单词实体。"""
     return WordEntity(word="食べる", common_form="食べる", hiragana="たべる", meaning="吃")
 
 

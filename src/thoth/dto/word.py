@@ -1,4 +1,4 @@
-"""单词数据传输对象：在工具入口、业务层与 DAO 之间传递请求和结果。
+"""单词数据传输对象：供业务层承载解析请求、保存中间结果和批次结果。
 
 单词表字段由 WordEntity 承载，操作指令和处理状态不作为表字段保存。
 """
@@ -13,7 +13,7 @@ from thoth.entity import WordEntity
 
 @dataclass(frozen=True, slots=True)
 class WordInput:
-    """承载一项解析结果；单词字段共用 entity，操作和错误属于请求信息。"""
+    """承载一项解析结果，包含单词实体、标签编码、操作类型及输入错误。"""
 
     # 单词记录；有效输入保留本次提供的字段，错误项仅保留可输出的 word。
     entity: WordEntity

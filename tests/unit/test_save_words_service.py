@@ -19,6 +19,7 @@ class MemoryTransaction:
     """模拟事务回滚恢复内存记录，支持在提交阶段注入错误；不模拟 PostgreSQL 锁。"""
 
     def __init__(self):
+        """初始化内存单词和关联记录、事务计数以及一次性提交错误。"""
         self.words = {}
         self.links = {}
         self.commits = 0
@@ -28,6 +29,7 @@ class MemoryTransaction:
 
     @contextmanager
     def transaction(self):
+        """进入时快照记录；执行或提交失败时恢复快照，并统计事务结果。"""
         before_words = self.words.copy()
         before_links = {key: value[:] for key, value in self.links.items()}
         self.active = True
@@ -48,22 +50,26 @@ class MemoryTransaction:
 
 @pytest.fixture
 def repository(monkeypatch):
+    """让三个模拟 Mapper 共用内存事务，验证保存流程及跨表失败回滚。"""
     connection = MemoryTransaction()
     repo = Mock(find_existing_words=Mock(return_value=[]))
     tags = Mock(find_by_codes=Mock(side_effect=lambda codes: [TagEntity(code=code) for code in codes]))
     links = Mock()
 
     def write(entity):
+        """在活动事务中用 ID 为 7 的实体替换内存记录，模拟单词写入。"""
         assert connection.active
         saved = replace(entity, id=7)
         connection.words[entity.word] = saved
         return saved
 
     def delete(word_id):
+        """在活动事务中清空指定单词的标签集合，模拟关联删除。"""
         assert connection.active
         connection.links[word_id] = []
 
     def insert_links(entities):
+        """在活动事务中逐条追加标签，便于模拟部分插入后的失败。"""
         assert connection.active
         for entity in entities:
             connection.links.setdefault(entity.word_id, []).append(entity.tag_code)
@@ -288,6 +294,7 @@ def test_failure_rolls_back_word_and_all_labels_and_next_item_succeeds(repositor
     if target is not None:
         original = target.side_effect
         def fail_once(*args):
+            """只注入一次故障；关联插入场景先写入一条记录，以验证部分写入也会回滚。"""
             target.side_effect = original
             if phase == "partial_insert":
                 connection.links[7].append(args[0][0].tag_code)
@@ -311,6 +318,7 @@ def test_failure_rolls_back_word_and_all_labels_and_next_item_succeeds(repositor
 def test_single_item_failure_does_not_stop_same_batch(repository):
     original = repository.insert.side_effect
     def insert(entity):
+        """仅让指定单词写入失败，其他单词调用正常的内存写入流程。"""
         if entity.word == "食べる":
             raise psycopg.errors.CheckViolation("secret")
         return original(entity)

@@ -16,7 +16,7 @@ class TagTblMapper:
         self._connection = connection
 
     def find_by_codes(self, codes: list[str]) -> list[TagEntity]:
-        """返回编码匹配的标签实体；空集合不查询，缺失编码不会出现在结果中。"""
+        """返回编码匹配的标签实体；空集合不查询，缺失编码不会出现在结果中，驱动异常向上传递。"""
         if not codes:
             return []
         # 按编码精确查询已有标签，不创建标签；关联写入时仍由外键保证引用有效。
@@ -25,6 +25,7 @@ class TagTblMapper:
         FROM tag_tbl
         WHERE code = ANY(%(codes)s)
         """
+        # class_row 按查询列名构造 TagEntity，供业务层读取标签编码。
         with self._connection.cursor(row_factory=class_row(TagEntity)) as cursor:
             cursor.execute(sql, {"codes": codes})
             return cursor.fetchall()
