@@ -10,7 +10,7 @@ from typing import get_type_hints
 
 import pytest
 
-from thoth.entities import (
+from thoth.entity import (
     TagEntity,
     WordEntity,
     WordMissEntity,

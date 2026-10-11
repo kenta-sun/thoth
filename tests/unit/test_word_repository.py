@@ -11,11 +11,11 @@ import psycopg
 import pytest
 from psycopg.pq import ExecStatus
 
-from thoth.db import word_repo
+from thoth.dao import word_tbl_mapper as word_repo
 from thoth.db.connection import DatabaseError
-from thoth.db.word_repo import MissingWordFieldsError, WordRepository
-from thoth.entities import WordEntity
-from thoth.word_service import parse_words_text, save_word_batch, serialize_word_batch
+from thoth.dao.word_tbl_mapper import MissingWordFieldsError, WordTblMapper
+from thoth.entity import WordEntity
+from thoth.service.word_service import parse_words_text, save_word_batch, serialize_word_batch
 
 CREATED_AT = datetime(2026, 10, 9, 12, tzinfo=timezone.utc)
 UPDATED_AT = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
@@ -106,7 +106,7 @@ def test_find_existing_words_uses_one_parameterized_query_and_returns_entities()
         database_row("食べる"), database_row("飲む", record_id=8, status_code="D"),
     ])
 
-    entities = WordRepository(connection).find_existing_words(words)
+    entities = WordTblMapper(connection).find_existing_words(words)
 
     assert all(isinstance(entity, WordEntity) for entity in entities)
     assert [entity.word for entity in entities] == ["食べる", "飲む"]
@@ -129,7 +129,7 @@ def test_class_row_maps_reordered_column_names_and_preserves_nullable_audit_fiel
     row = database_row(status_code="D", created_by=None, updated_by=None)
     connection = ScriptedConnection([tuple(reversed(row))])
 
-    entity, = WordRepository(connection).find_existing_words(["食べる"])
+    entity, = WordTblMapper(connection).find_existing_words(["食べる"])
 
     assert entity == WordEntity(
         id=7, word="食べる", common_form="食べる", hiragana="たべる", meaning="吃",
@@ -143,7 +143,7 @@ def test_class_row_maps_reordered_column_names_and_preserves_nullable_audit_fiel
 def test_find_existing_words_with_empty_input_does_not_query():
     connection = ScriptedConnection()
 
-    assert WordRepository(connection).find_existing_words([]) == []
+    assert WordTblMapper(connection).find_existing_words([]) == []
     assert connection.statements == []
 
 
@@ -152,7 +152,7 @@ def test_find_existing_words_sanitizes_database_errors():
         psycopg.errors.UndefinedTable("secret driver message and SQL")
     )
     with pytest.raises(DatabaseError) as exc_info:
-        WordRepository(connection).find_existing_words(["食べる"])
+        WordTblMapper(connection).find_existing_words(["食べる"])
 
     assert "secret" not in str(exc_info.value)
     assert "42P01" in str(exc_info.value)
@@ -164,7 +164,7 @@ def test_one_batch_query_followed_by_100_saves_has_no_extra_selects(complete_ent
         [database_row(word) for word in words[::2]],
         *(database_row(word, record_id=index) for index, word in enumerate(words)),
     )
-    repository = WordRepository(connection)
+    repository = WordTblMapper(connection)
     existing_words = {entity.word for entity in repository.find_existing_words(words)}
 
     for word in words:
@@ -182,7 +182,7 @@ def test_one_batch_query_followed_by_100_saves_has_no_extra_selects(complete_ent
 @pytest.mark.parametrize("action", ["create", "update"])
 def test_absent_word_is_created_with_all_fields_and_database_generated_values(action, complete_entity):
     connection = ScriptedConnection(database_row(created_by="test-operator", updated_by="test-operator"))
-    result = WordRepository(connection, operator="test-operator").save(
+    result = WordTblMapper(connection, operator="test-operator").save(
         complete_entity, action=action, exists=False,
     )
 
@@ -213,7 +213,7 @@ def test_absent_word_is_created_with_all_fields_and_database_generated_values(ac
 @pytest.mark.parametrize("meaning", [None, "覆盖值"])
 def test_existing_create_skips_without_requiring_or_overwriting_fields(meaning):
     connection = ScriptedConnection()
-    result = WordRepository(connection).save(
+    result = WordTblMapper(connection).save(
         WordEntity(word="食べる", meaning=meaning), action="create", exists=True,
     )
 
@@ -225,7 +225,7 @@ def test_existing_create_skips_without_requiring_or_overwriting_fields(meaning):
 
 def test_existing_update_only_changes_supplied_fields_and_returns_database_entity():
     connection = ScriptedConnection(database_row(meaning="吃；食用", status_code="D"))
-    result = WordRepository(connection).save(
+    result = WordTblMapper(connection).save(
         WordEntity(word="食べる", meaning="吃；食用"), action="update", exists=True,
     )
 
@@ -249,7 +249,7 @@ def test_existing_update_only_changes_supplied_fields_and_returns_database_entit
 
 def test_existing_update_with_no_effective_fields_skips():
     connection = ScriptedConnection()
-    result = WordRepository(connection).save(
+    result = WordTblMapper(connection).save(
         WordEntity(word="食べる"), action="update", exists=True,
     )
 
@@ -262,7 +262,7 @@ def test_existing_update_with_no_effective_fields_skips():
 def test_missing_creation_fields_are_reported_only_for_absent_words(action):
     connection = ScriptedConnection()
     with pytest.raises(MissingWordFieldsError) as exc_info:
-        WordRepository(connection).save(
+        WordTblMapper(connection).save(
             WordEntity(word="食べる", meaning="吃"), action=action, exists=False,
         )
 
@@ -276,7 +276,7 @@ def test_missing_creation_fields_are_reported_only_for_absent_words(action):
 
 def test_concurrent_insert_conflict_in_create_skips_without_update(complete_entity):
     connection = ScriptedConnection(None)
-    result = WordRepository(connection).save(complete_entity, action="create", exists=False)
+    result = WordTblMapper(connection).save(complete_entity, action="create", exists=False)
 
     assert result.status == "skipped"
     assert result.entity is None
@@ -286,7 +286,7 @@ def test_concurrent_insert_conflict_in_create_skips_without_update(complete_enti
 
 def test_concurrent_insert_conflict_in_update_updates_the_existing_row(complete_entity):
     connection = ScriptedConnection(None, database_row())
-    result = WordRepository(connection).save(complete_entity, action="update", exists=False)
+    result = WordTblMapper(connection).save(complete_entity, action="update", exists=False)
 
     assert result.status == "updated"
     assert result.entity.id == 7
@@ -297,7 +297,7 @@ def test_concurrent_insert_conflict_in_update_updates_the_existing_row(complete_
 def test_external_deletion_after_insert_conflict_is_not_reported_as_success(complete_entity):
     connection = ScriptedConnection(None, None)
     with pytest.raises(DatabaseError, match="记录发生变化"):
-        WordRepository(connection).save(complete_entity, action="update", exists=False)
+        WordTblMapper(connection).save(complete_entity, action="update", exists=False)
 
     assert connection.rollbacks == 1
     assert connection.commits == 0
@@ -306,7 +306,7 @@ def test_external_deletion_after_insert_conflict_is_not_reported_as_success(comp
 def test_external_deletion_after_batch_query_is_not_reported_as_success():
     connection = ScriptedConnection(None)
     with pytest.raises(DatabaseError, match="记录发生变化"):
-        WordRepository(connection).save(
+        WordTblMapper(connection).save(
             WordEntity(word="食べる", meaning="吃"), action="update", exists=True,
         )
 
@@ -320,7 +320,7 @@ def test_failed_save_rolls_back_and_next_save_can_succeed(complete_entity):
         psycopg.errors.CheckViolation("secret driver message and SQL"),
         database_row("飲む", record_id=8),
     )
-    repository = WordRepository(connection)
+    repository = WordTblMapper(connection)
     with pytest.raises(DatabaseError) as exc_info:
         repository.save(complete_entity, action="create", exists=False)
 
@@ -338,7 +338,7 @@ def test_failed_save_rolls_back_and_next_save_can_succeed(complete_entity):
 def test_sql_values_are_bound_and_exact_word_is_preserved(complete_entity):
     word = "  食べる'; DROP TABLE word_tbl; --  "
     connection = ScriptedConnection(database_row(word))
-    WordRepository(connection).save(
+    WordTblMapper(connection).save(
         replace(complete_entity, word=word), action="create", exists=False,
     )
 
@@ -350,7 +350,7 @@ def test_sql_values_are_bound_and_exact_word_is_preserved(complete_entity):
 def test_unknown_action_cannot_trigger_a_write():
     connection = ScriptedConnection()
     with pytest.raises(ValueError, match="action"):
-        WordRepository(connection).save(WordEntity(word="食べる"), action="delete", exists=False)
+        WordTblMapper(connection).save(WordEntity(word="食べる"), action="delete", exists=False)
 
     assert connection.statements == []
 
@@ -366,7 +366,7 @@ def test_json_to_repository_entity_round_trip_preserves_partial_update_and_outpu
         {"word":"飲む", "meaning":"喝", "operation":{"action":"update"}}
     ]''')
 
-    result = serialize_word_batch(save_word_batch(requests, WordRepository(connection)))
+    result = serialize_word_batch(save_word_batch(requests, WordTblMapper(connection)))
 
     assert result == {"results": [
         {"index": 0, "word": "食べる", "status": "created"},

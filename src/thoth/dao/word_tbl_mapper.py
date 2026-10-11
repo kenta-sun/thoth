@@ -1,20 +1,20 @@
-"""仓储层负责单词表读写，把业务层传入的实体交给固定 SQL 保存。
+"""DAO 层的 word_tbl 映射器：仅负责单词表读写，把业务层传入的实体交给固定 SQL 保存。
 
-业务层先批量查询已有实体，再逐项调用保存；仓储只在 SQL 参数绑定处使用字典，
+业务层先批量查询已有实体，再逐项调用保存；DAO 只在 SQL 参数绑定处使用字典，
 查询及写入返回的记录均由驱动构造成 WordEntity。每次保存使用独立事务，
 单项失败回滚后不会阻止同一连接继续处理下一项。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Literal
 
 import psycopg
 from psycopg.rows import class_row
 
 from thoth.db.connection import DatabaseError
-from thoth.entities import WordEntity
+from thoth.entity import WordEntity
+from thoth.dto.word import SaveResult
 
 # 按 word 原文一次查询本批已有记录，包含已标记删除的词；不加行锁，
 # 因此结果只反映查询时的存在性，保存时仍需处理并发新增或外部删除。
@@ -53,18 +53,6 @@ RETURNING id, word, common_form, hiragana, meaning, status_code,
 """
 
 
-@dataclass(frozen=True, slots=True)
-class SaveResult:
-    """承载一次仓储保存的结果，交由业务层转换为逐项对外响应。"""
-
-    # created 表示已新增，updated 表示已修改，skipped 表示本次没有写入。
-    status: Literal["created", "updated", "skipped"]
-    # 跳过时说明原因；成功新增或修改时为 None。
-    reason: str | None = None
-    # 写入后由数据库返回的完整记录，含生成值；跳过写入时为 None。
-    entity: WordEntity | None = None
-
-
 class MissingWordFieldsError(ValueError):
     """实际需要新增时，报告尚未提供有效值的信息字段。"""
 
@@ -75,8 +63,8 @@ class MissingWordFieldsError(ValueError):
         super().__init__(f"需要新增单词，但以下字段缺失或为空：{', '.join(fields)}。")
 
 
-class WordRepository:
-    """在调用方管理的连接上查询和保存单词，不负责建立或关闭连接。
+class WordTblMapper:
+    """在调用方管理的连接上查询和保存 word_tbl 记录，不负责建立或关闭连接。
 
     连接必须启用 autocommit，批量查重不持有跨项事务；需要写入时，
     save 为该项单独建立事务并处理并发冲突。
@@ -182,7 +170,7 @@ class WordRepository:
             raise DatabaseError(f"保存单词失败{code}，请稍后重试。") from exc
 
     def _parameters(self, entity: WordEntity) -> dict[str, str | None]:
-        """在 SQL 绑定边界读取实体业务属性，返回固定参数及仓储配置的操作者。
+        """在 SQL 绑定边界读取实体业务属性，返回固定参数及 DAO 配置的操作者。
 
         保留信息字段中的 None，供局部更新 SQL 判断是否修改；不绑定实体中的
         id、状态或时间，防止请求中的缺省值覆盖数据库生成值。

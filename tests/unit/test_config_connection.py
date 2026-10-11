@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import psycopg
 import pytest
 
-from thoth import config
+from thoth.common import config
 from thoth.db import connection as connection_module
 
 

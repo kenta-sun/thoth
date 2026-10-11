@@ -1,4 +1,4 @@
-"""读取单词服务的运行配置，供 MCP 入口和数据库连接层使用。
+"""公共配置模块：读取单词服务的运行配置，供 MCP 入口和数据库连接层使用。
 
 首次调用 get_settings 时才读取本地配置和环境变量，并缓存解析后的 Settings。
 模块导入本身不加载配置、不连接数据库，便于 MCP 工具发现和单元测试。
@@ -14,7 +14,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 配置文件位置以项目目录为准，避免 MCP 客户端的启动目录影响配置读取。
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# 本模块位于 src/thoth/common，向上四级仍定位到项目根目录。
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE_PATH = PROJECT_ROOT / ".env"
 
 
@@ -38,7 +39,7 @@ def load_settings() -> Settings:
     操作者未提供或仅有空白时使用 THOTH_MCP。
 
     Returns:
-        可交给连接层和仓储层使用的配置对象。
+        可交给连接层和 DAO 层使用的配置对象。
 
     Raises:
         ValueError: 缺少有效连接字符串，或操作者超过审计列允许的 128 个字符。

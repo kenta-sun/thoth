@@ -10,10 +10,11 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from fastmcp import Client
 
-from thoth import mcp_server
+from thoth.tools import word_tools as mcp_server
 from thoth.db.connection import DatabaseError
-from thoth.db.word_repo import MissingWordFieldsError, SaveResult
-from thoth.entities import WordEntity
+from thoth.dao.word_tbl_mapper import MissingWordFieldsError
+from thoth.dto.word import SaveResult
+from thoth.entity import WordEntity
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def backend(monkeypatch):
     repository_factory = Mock(return_value=repository)
     monkeypatch.setattr(mcp_server, "get_settings", get_settings)
     monkeypatch.setattr(mcp_server, "open_connection", open_connection)
-    monkeypatch.setattr(mcp_server, "WordRepository", repository_factory)
+    monkeypatch.setattr(mcp_server, "WordTblMapper", repository_factory)
     return SimpleNamespace(
         settings=settings, get_settings=get_settings, open_connection=open_connection,
         connection=connection, repository=repository, repository_factory=repository_factory,
@@ -46,7 +47,7 @@ def call_save_words(text):
 
 
 def test_import_does_not_read_configuration_or_connect(monkeypatch):
-    from thoth import config
+    from thoth.common import config
     from thoth.db import connection
 
     get_settings = Mock(side_effect=AssertionError("must not load real configuration"))

@@ -6,9 +6,11 @@ from unittest.mock import Mock
 import pytest
 
 from thoth.db.connection import DatabaseError
-from thoth.db.word_repo import MissingWordFieldsError, SaveResult
-from thoth.entities import WordEntity
-from thoth.word_service import WordInput, parse_words_text, save_word_batch, serialize_word_batch
+from thoth.dao.word_tbl_mapper import MissingWordFieldsError
+from thoth.dto.word import SaveResult
+from thoth.entity import WordEntity
+from thoth.dto.word import WordInput
+from thoth.service.word_service import parse_words_text, save_word_batch, serialize_word_batch
 
 
 @pytest.fixture

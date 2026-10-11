@@ -69,12 +69,16 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 单独�
 
 六张表均有对应的 entity，字段名称和基础类型对应表结构。entity 只是数据容器，所有字段均允许为 `None`、默认值为 `None`，支持空对象和局部赋值，不包含非空或业务校验。JSON 输入校验和新增必填检查保留在实体之外，数据库继续负责表约束及 ID、状态和时间戳等默认值。业务层通过对象传递记录和结果，仅在 JSON 输入输出及 SQL 参数绑定边界使用字典。
 
-- `mcp_server.py`：FastMCP 工具注册、AI 可见说明和入口。
-- `entities.py`：单词、标签、单词状态、单词标签关联、使用次数、陌生次数六张表的实体。
-- `word_service.py`：JSON 与对象的转换、业务输入校验、操作选择和逐项结果整理。
-- `db/word_repo.py`：固定的参数化 SQL、实体参数访问，以及数据库行到实体的映射。
-- `db/connection.py`：数据库连接。
-- `config.py`：数据库和操作者配置。
+- `mcp_server.py`：启动 stdio MCP 服务，加载工具注册；启动命令保持不变。
+- `tools/word_tools.py`：FastMCP 工具注册、AI 可见说明和请求入口。
+- `service/word_service.py`：JSON 与对象的转换、业务输入校验和批量保存流程。
+- `dao/` 按一张表一个 `<表名>_mapper.py` 文件组织，尚无数据访问 SQL 的表暂不创建 mapper。
+- `dao/word_tbl_mapper.py`：`WordTblMapper` 封装固定 SQL、实体行映射、保存分支与逐项事务。
+- `entity/`：六张表各自的实体定义，不承担校验。
+- `dto/word.py`：单词输入、逐项结果、批次结果和 DAO 保存结果。
+- `utils/json_utils.py`：JSON 重复键与非标准数值检查等通用辅助函数。
+- `db/connection.py`：数据库连接的建立、关闭及连接错误转换。
+- `common/`：运行配置及各模块共用的公共定义与能力；`common/config.py` 保存数据库和操作者配置。
 
 执行测试：
 

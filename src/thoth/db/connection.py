@@ -1,7 +1,7 @@
 """数据库基础层负责按配置建立 PostgreSQL 连接，并在调用结束时关闭。
 
-MCP 入口通过 open_connection 获取连接后交给仓储；连接启用 autocommit，
-每项写入的事务范围由仓储显式管理。本模块不加载扩展，也不执行结构变更。
+MCP 入口通过 open_connection 获取连接后交给 DAO；连接启用 autocommit，
+每项写入的事务范围由 DAO 显式管理。本模块不加载扩展，也不执行结构变更。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 import psycopg
 
-from thoth.config import Settings, get_settings
+from thoth.common.config import Settings, get_settings
 
 
 class DatabaseError(RuntimeError):
@@ -33,7 +33,7 @@ def open_connection(settings: Settings | None = None) -> Iterator[psycopg.Connec
 
     Yields:
         打开的 PostgreSQL 连接，驱动连接超时设为 5 秒。调用方负责具体查询，
-        仓储用显式事务管理每项写入，本上下文不额外包裹整批事务。
+        DAO 用显式事务管理每项写入，本上下文不额外包裹整批事务。
 
     Raises:
         ValueError: 未提供 settings 且配置层校验失败，原样交给入口处理。
@@ -42,7 +42,7 @@ def open_connection(settings: Settings | None = None) -> Iterator[psycopg.Connec
     # 显式传入配置时直接复用；配置错误不混同为数据库连接错误。
     resolved = settings or get_settings()
     try:
-        # autocommit 使查重读取不留下跨项事务；写入事务由仓储逐项开启。
+        # autocommit 使查重读取不留下跨项事务；写入事务由 DAO 逐项开启。
         connection = psycopg.connect(
             resolved.pg_dsn, autocommit=True, connect_timeout=5
         )
