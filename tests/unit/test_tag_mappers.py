@@ -9,21 +9,19 @@ from thoth.dao.tag_tbl_mapper import TagTblMapper
 from thoth.dao.word_tag_tbl_mapper import WordTagTblMapper
 from thoth.entity import TagEntity, WordTagEntity
 from thoth.service.add_update_words_service import parse_words_text, save_word_batch, serialize_word_batch
-from tests.unit.test_word_repository import ScriptedConnection, database_row, CREATED_AT, UPDATED_AT
+from tests.unit.test_word_repository import ScriptedConnection, database_row
 
 
 def tag_row(code="v"):
-    """按标签 SQL 列顺序模拟驱动返回的完整记录。"""
-    return (code, "动词", "動詞", CREATED_AT, UPDATED_AT, "operator", "operator")
+    """按标签 SQL 列顺序模拟驱动返回的业务字段。"""
+    return (code, "动词", "動詞")
 
 
 def test_tag_query_maps_entities_and_binds_codes_without_transactions():
     connection = ScriptedConnection([tag_row()])
     codes = ["v", "unknown"]
     rows = TagTblMapper(connection).find_by_codes(codes)
-    assert rows == [TagEntity(code="v", zh_name="动词", jp_name="動詞",
-                              created_at=CREATED_AT, updated_at=UPDATED_AT,
-                              created_by="operator", updated_by="operator")]
+    assert rows == [TagEntity(code="v", zh_name="动词", jp_name="動詞")]
     query, params = connection.statements[0]
     assert "WHERE code = ANY(%(codes)s)" in query
     assert params == {"codes": codes}

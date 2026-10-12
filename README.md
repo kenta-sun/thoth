@@ -1,6 +1,6 @@
 # Thoth
 
-基于 Python、FastMCP 和 PostgreSQL 的日语单词 MCP 服务。提供 `add_update_words(text: str)`、`count_word_usage(text: str)`、`count_word_miss(text: str)` 和 `reset_word_miss(text: str)`，由 AI 整理单词信息及标签，再通过固定业务接口写入已有的 `word_tbl` 和 `word_tag_tbl`。
+基于 Python、FastMCP 和 PostgreSQL 的日语单词 MCP 服务。提供 `add_update_words(text: str)`、`count_word_usage(text: str)`、`count_word_miss(text: str)`、`reset_word_miss(text: str)` 和 `query_words(text: str)`，由 AI 整理单词信息及标签，再通过固定业务接口写入已有的 `word_tbl` 和 `word_tag_tbl`。
 
 服务不调用大模型、不生成向量，也不向 AI 提供任意 SQL 或表结构修改接口。项目原有依赖暂时保留。
 
@@ -111,6 +111,84 @@ original_items 为包含 index、original_value 的 `WordListItem` 列表，pend
 两张统计表各自 Mapper 返回 entity，DTO 承载输入及结果。
 数据库需预先存在 `word_miss_tbl` 和 `word_usage_tbl`，服务不会自动建表。
 
+## query_words
+
+唯一参数 `text` 是 JSON 对象字符串，可组合 `where`、`fields`、`sort`、`limit`。
+以下展示解析后的对象，实际调用时需序列化为字符串传入 `text`。
+
+| 参数 | 用途 | 省略时 |
+| --- | --- | --- |
+| `where` | 条件对象，各字段和同字段的多个操作均按 AND 组合 | 无额外条件 |
+| `fields` | 返回字段数组 | 全部七个业务字段 |
+| `sort` | 按优先级排列的 `[[字段, "asc"或"desc"]]` | 单词 ID 升序 |
+| `limit` | BIGINT 范围内的正整数 | 返回全部匹配结果，不静默截断 |
+
+| 业务字段 | 支持的筛选 |
+| --- | --- |
+| `word`、`hiragana`、`meaning` | 直接值相等、`in` |
+| `common_form` | 直接值相等、`in`、`like` |
+| `tags` | `in`，拥有任意指定编码，不推断标签层级 |
+| `usage_count`、`miss_count` | 直接值相等、`in`、`gt/gte/lt/lte`；值为 BIGINT 范围内非负整数 |
+
+除 `tags` 外均可排序，排序并列追加单词 ID 升序。筛选和排序使用的字段不必返回。
+字符串原文匹配，不自动修剪空白或转换写法。相等条件直接写值，不使用 `eq` 对象。
+不支持跨字段 OR、分页、聚合或调用方指定 SQL、表名和关联。
+
+```json
+{
+  "where": {
+    "common_form": {"like": "%食%"},
+    "tags": {"in": ["v"]},
+    "usage_count": {"lte": 5}
+  },
+  "fields": ["word", "common_form", "usage_count"],
+  "sort": [["usage_count", "asc"], ["miss_count", "desc"]],
+  "limit": 10
+}
+```
+
+| 场景 | 解析后的请求 |
+| --- | --- |
+| 所有单词信息 | `{}` |
+| 所有常用写法 | `{"fields":["common_form"]}` |
+| 指定单词 | `{"where":{"word":{"in":["食べる","学校"]}}}` |
+| 使用次数最低的 100 个 | `{"sort":[["usage_count","asc"]],"limit":100}` |
+| 陌生次数最高的 100 个 | `{"sort":[["miss_count","desc"]],"limit":100}` |
+| 10 个动词或名词 | `{"where":{"tags":{"in":["v","n"]}},"limit":10}` |
+
+`like` 原样使用 PostgreSQL `LIKE`：`"食%"` 匹配开头，`"%る"` 匹配结尾，`"%食%"` 匹配包含，
+`_` 匹配单个字符。不自动加通配符，不改用 `ILIKE`。反斜杠转义字面通配符，
+例如 JSON `{"where":{"common_form":{"like":"%\\%"}}}` 匹配以字面 `%` 结尾的常用写法。
+`in` 与 `like` 可以同时出现在 `common_form` 条件中，两者必须同时满足。
+
+固定排除 `status_code = 'D'` 的单词，不接受状态条件覆盖。按需关联统计表，
+无统计记录统一按 0 筛选、排序和返回，查询不会初始化或更新统计记录。
+标签筛选使用 EXISTS，标签返回为按编码排序的数组，一词多标签不会重复或占用多条 limit。
+
+返回 `{"results":[对象,...]}`，每项仅包含选定字段；单字段查询仍返回对象，无匹配为空数组。
+不返回总数，不合并常用写法相同的不同单词。四个审计字段不开放查询。
+拒绝未知字段/操作、null、重复 JSON 键、非标准数值、布尔计数/limit、重复投影/排序字段，
+以及空的 fields、sort、in、字段条件对象。空对象和空 where 合法；空文本和空 LIKE 模式沿用数据库语义。
+输入校验失败不访问数据库，连接或查询失败返回脱敏工具错误。
+
+## 标签目录维护
+
+`src/thoth/common/tags.py` 中的 `TAG_DEFINITIONS` 是唯一人工维护的完整标签目录，包含编码及中日文名称。
+新增/修改与查询工具的 description 均拼接由它生成的 `TAG_OPTIONS_DESCRIPTION`，加载说明不连接数据库。
+修改目录后重启 MCP 服务即可更新工具说明；示例中的少量编码不构成另一份标签清单。
+
+标签初始化 SQL 是派生产物，不手工编辑。在项目根目录执行：
+
+```shell
+.venv/bin/python -m thoth.utils.generate_tag_sql
+.venv/bin/python -m thoth.utils.generate_tag_sql --check
+```
+
+第一条命令生成 `sql/dml/dml__tag_tbl.sql`，第二条只检查文件是否与常量一致。
+命令不连接或修改数据库，SQL 执行时仅插入缺失编码，保留已有标签记录。
+数据库标签仍需显式初始化或迁移；修改常量不会自动修改已存名称或删除标签。
+写入时仍校验标签是否存在于数据库，不改为仅按常量校验。
+
 ## 代码结构
 
 JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完整标签列表 `tags` 通过 DTO 传递。保存时先校验整批输入，再用一次查询取得已有的单词实体，随后按原顺序逐项校验标签、新增、修改或跳过。新增和修改通过 `RETURNING` 直接取得数据库保存后的实体，不增加逐词查询；新增时仍由唯一约束处理并发冲突，默认 `create` 不会覆盖已有信息。Service 管理每项事务，先更新单词取得行锁，再删除和重建标签关联，提交前发生任何错误均整项回滚。
@@ -127,9 +205,13 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 - `dao/word_tag_tbl_mapper.py`：`WordTagTblMapper` 按单词 ID 删除关联、批量插入 `WordTagEntity`。所有 Mapper 均不管理事务或决定业务分支。
 - `entity/`：六张表各自的实体定义，不承担校验。
 - `dto/word.py`：单词输入、逐项结果、批次结果和 DAO 保存结果。
+- `service/query_words_service.py`：解析、校验、执行及序列化查询；查询记录通过各表实体与结果 DTO 传递。
+- `utils/sql_query_builder.py`：独立构建 SQL 模板和参数，不连接数据库；Mapper 提供字段白名单、关联及固定条件。
 - `utils/json_utils.py`：JSON 重复键与非标准数值检查等通用辅助函数。
 - `db/connection.py`：数据库连接的建立、关闭及连接错误转换。
 - `common/`：运行配置及各模块共用的公共定义与能力；`common/config.py` 保存数据库和操作者配置。
+
+数据库读取和 RETURNING 不包含业务未使用的四个审计字段；实体中这些字段保持 None，数据库审计写入行为不变。
 
 执行测试：
 
@@ -150,7 +232,7 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 .venv/bin/python -m thoth.mcp_server
 ```
 
-服务通过 stdio 提供 `add_update_words`、`count_word_usage`、`count_word_miss` 和 `reset_word_miss`，参数均为 `text: str`。配置 MCP 客户端时，将命令设为项目 `.venv/bin/python` 的绝对路径，参数设为：
+服务通过 stdio 提供 `add_update_words`、`count_word_usage`、`count_word_miss`、`reset_word_miss` 和 `query_words`，参数均为 `text: str`。配置 MCP 客户端时，将命令设为项目 `.venv/bin/python` 的绝对路径，参数设为：
 
 ```json
 ["-m", "thoth.mcp_server"]
@@ -164,9 +246,9 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 .venv/bin/python -m pytest
 ```
 
-## PostgreSQL 统计集成测试
+## PostgreSQL 集成测试
 
-单元测试不需要数据库。真实并发、事务回滚和审计验证使用专用测试库：
+单元测试不需要数据库。真实查询、并发、事务回滚和审计验证使用专用测试库：
 在项目根目录 `.env` 或运行环境中设置 `THOTH_TEST_PG_DSN`，指向独立数据库 `thoth_test`，再执行
 `.venv/bin/python -m pytest tests/integration`。
 进程环境变量优先于 `.env`，不会回退使用业务连接 `THOTH_PG_DSN`。

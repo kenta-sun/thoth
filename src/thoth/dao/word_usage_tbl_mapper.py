@@ -46,7 +46,7 @@ class WordUsageTblMapper:
         WHERE word_id = ANY(%(ids)s)
           AND EXISTS (SELECT 1 FROM word_tbl
                       WHERE id = word_usage_tbl.word_id AND status_code <> 'D')
-        RETURNING word_id, usage_count, created_at, updated_at, created_by, updated_by
+        RETURNING word_id, usage_count
         """
         with self._connection.cursor(row_factory=class_row(WordUsageEntity)) as cursor:
             cursor.execute(sql, {"ids": [entity.word_id for entity in entities], "operator": operator})

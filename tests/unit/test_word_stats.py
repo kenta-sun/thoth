@@ -17,14 +17,14 @@ from thoth.service import reset_word_miss_service as reset_service
 from thoth.service.word_stats_input_service import parse_word_list_text, merge_stats_results, serialize_stats
 from thoth.dto.word_stats import WordListItem, WordListPreprocessResult, StatsResult
 from thoth.tools.mcp_tools import mcp
-from tests.unit.test_word_repository import ScriptedConnection, database_row, CREATED_AT, UPDATED_AT
+from tests.unit.test_word_repository import ScriptedConnection, database_row
 
 CASES = [(usage_service, "count_word_usage", "usage"), (miss_service, "count_word_miss", "miss")]
 
 
 def stat_row(value=1, word_id=7):
     """提供经过驱动类型适配的统计记录。"""
-    return (word_id, value, CREATED_AT, UPDATED_AT, "original", "tester")
+    return (word_id, value)
 
 
 def install_backend(monkeypatch, service, *responses):
@@ -149,7 +149,7 @@ def test_protocol_strict_string_and_structured_result(monkeypatch, service, name
     async def run():
         async with Client(mcp) as client:
             tools = await client.list_tools()
-            assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss"}
+            assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss", "query_words"}
             tool = next(tool for tool in tools if tool.name == name)
             assert tool.inputSchema["properties"]["text"]["type"] == "string"
             assert (await client.call_tool_mcp(name, {"text": ["a"]})).isError

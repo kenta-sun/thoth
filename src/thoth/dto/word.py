@@ -57,5 +57,5 @@ class SaveResult:
     status: Literal["created", "updated", "skipped"]
     # 跳过时说明原因；成功新增或修改时为 None。
     reason: str | None = None
-    # 写入后由数据库返回的完整记录，含生成值；跳过写入时为 None。
+    # 写入后由数据库返回的业务记录，含生成 ID 和状态；跳过写入时为 None。
     entity: WordEntity | None = None

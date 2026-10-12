@@ -4,8 +4,54 @@ from __future__ import annotations
 
 import psycopg
 from psycopg.rows import class_row
+from types import MappingProxyType
 
-from thoth.entity import WordEntity
+from thoth.entity import WordEntity, WordTagEntity
+from thoth.common.query_words import TEXT_FIELDS, QUERY_OPERATORS
+from thoth.dto.query_words import QueryRequest, QuerySqlSpec, QueryWordResult, SqlField
+from thoth.utils.sql_query_builder import build_query
+
+
+# 主表固定排除删除记录；统计按需 LEFT JOIN，缺失行在所有表达式中统一按零处理。
+# 标签通过相关子查询投影、EXISTS 筛选，均不扩大主表行数，LIMIT 仍按单词计数。
+WORD_QUERY_SPEC = QuerySqlSpec(
+    source="word_tbl AS w", predicate="w.status_code <> 'D'", tie_breaker="w.id ASC",
+    fields=MappingProxyType({
+        **{name: SqlField(f"w.{name}", QUERY_OPERATORS[name]) for name in TEXT_FIELDS},
+        "tags": SqlField(
+            "ARRAY(SELECT wt.tag_code FROM word_tag_tbl AS wt WHERE wt.word_id = w.id ORDER BY wt.tag_code)",
+            QUERY_OPERATORS["tags"], sortable=False,
+            membership_expression="EXISTS (SELECT 1 FROM word_tag_tbl AS ft WHERE ft.word_id = w.id AND ft.tag_code = ANY({value}))",
+        ),
+        "usage_count": SqlField("COALESCE(u.usage_count, 0)", QUERY_OPERATORS["usage_count"], joins=("usage",)),
+        "miss_count": SqlField("COALESCE(m.miss_count, 0)", QUERY_OPERATORS["miss_count"], joins=("miss",)),
+    }),
+    joins=MappingProxyType({
+        "usage": "LEFT JOIN word_usage_tbl AS u ON u.word_id = w.id",
+        "miss": "LEFT JOIN word_miss_tbl AS m ON m.word_id = w.id",
+    }),
+)
+
+
+def _query_row_factory(cursor):
+    """将动态投影列映射到各表实体，不用动态字典承载数据库记录。"""
+    columns = tuple(column.name for column in cursor.description)
+
+    def make_row(values) -> QueryWordResult:
+        """依据已选列构造关联结果；未查询的实体字段保持 None。"""
+        result = QueryWordResult()
+        for name, value in zip(columns, values, strict=True):
+            if name == "tags":
+                result.tags = [WordTagEntity(tag_code=code) for code in value]
+            elif name == "usage_count":
+                result.usage.usage_count = value
+            elif name == "miss_count":
+                result.miss.miss_count = value
+            else:
+                setattr(result.word, name, value)
+        return result
+
+    return make_row
 
 
 class WordTblMapper:
@@ -16,6 +62,16 @@ class WordTblMapper:
         self._connection = connection
         self._operator = operator
 
+    def query_words(self, request: QueryRequest) -> list[QueryWordResult]:
+        """执行构建器生成的只读查询；不加行锁、不提交事务，空结果返回空列表。
+
+        request 已由 Service 校验；构建器再次约束字段及操作，参数交给驱动绑定。
+        """
+        query = build_query(request, WORD_QUERY_SPEC)
+        with self._connection.cursor(row_factory=_query_row_factory) as cursor:
+            cursor.execute(query.sql, query.params)
+            return cursor.fetchall()
+
     def find_existing_words(self, words: list[str]) -> list[WordEntity]:
         """按原文查询包含已删除状态的单词；空列表不查询，不加锁，驱动异常向上传递。"""
         if not words:
@@ -23,8 +79,7 @@ class WordTblMapper:
         # 按 word 原文一次查询本批已有记录，包含已标记删除的词；不加行锁，
         # 因此结果只反映查询时的存在性，保存时仍需处理并发新增或外部删除。
         sql = """
-        SELECT id, word, common_form, hiragana, meaning, status_code,
-               created_at, updated_at, created_by, updated_by
+        SELECT id, word, common_form, hiragana, meaning, status_code
         FROM word_tbl
         WHERE word = ANY(%(words)s)
         """
@@ -34,16 +89,15 @@ class WordTblMapper:
             return cursor.fetchall()
 
     def insert(self, entity: WordEntity) -> WordEntity | None:
-        """在调用方事务内新增；返回含数据库生成值的实体，word 冲突时返回 None；其他驱动异常向上传递。"""
+        """在调用方事务内新增；返回含生成 ID 和状态的业务实体，word 冲突时返回 None；其他驱动异常向上传递。"""
         # 仅写业务字段和操作者，id、状态和时间交给数据库默认值生成。
         # word 的唯一约束配合 ON CONFLICT 避免并发新增时覆盖原记录；
-        # RETURNING 返回实际新增的完整行，发生冲突而未写入时不返回记录。
+        # RETURNING 返回实际新增的业务字段，发生冲突而未写入时不返回记录。
         sql = """
         INSERT INTO word_tbl (word, common_form, hiragana, meaning, created_by, updated_by)
         VALUES (%(word)s, %(common_form)s, %(hiragana)s, %(meaning)s, %(operator)s, %(operator)s)
         ON CONFLICT (word) DO NOTHING
-        RETURNING id, word, common_form, hiragana, meaning, status_code,
-                  created_at, updated_at, created_by, updated_by
+        RETURNING id, word, common_form, hiragana, meaning, status_code
         """
         with self._connection.cursor(row_factory=class_row(WordEntity)) as cursor:
             cursor.execute(sql, self._parameters(entity))
@@ -55,8 +109,7 @@ class WordTblMapper:
         包含已删除记录，由 Service 判断状态；行锁防止统计期间修改状态或删除。
         """
         sql = """
-        SELECT id, word, common_form, hiragana, meaning, status_code,
-               created_at, updated_at, created_by, updated_by
+        SELECT id, word, common_form, hiragana, meaning, status_code
         FROM word_tbl WHERE word = %(word)s FOR UPDATE
         """
         with self._connection.cursor(row_factory=class_row(WordEntity)) as cursor:
@@ -77,8 +130,7 @@ class WordTblMapper:
             updated_at = CURRENT_TIMESTAMP,
             updated_by = %(operator)s
         WHERE word = %(word)s
-        RETURNING id, word, common_form, hiragana, meaning, status_code,
-                  created_at, updated_at, created_by, updated_by
+        RETURNING id, word, common_form, hiragana, meaning, status_code
         """
         with self._connection.cursor(row_factory=class_row(WordEntity)) as cursor:
             cursor.execute(sql, self._parameters(entity))

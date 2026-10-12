@@ -21,7 +21,7 @@ class TagTblMapper:
             return []
         # 按编码精确查询已有标签，不创建标签；关联写入时仍由外键保证引用有效。
         sql = """
-        SELECT code, zh_name, jp_name, created_at, updated_at, created_by, updated_by
+        SELECT code, zh_name, jp_name
         FROM tag_tbl
         WHERE code = ANY(%(codes)s)
         """

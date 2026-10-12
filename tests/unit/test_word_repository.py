@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import psycopg
@@ -14,23 +13,18 @@ from psycopg.pq import ExecStatus
 from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.entity import WordEntity
 
-CREATED_AT = datetime(2026, 10, 9, 12, tzinfo=timezone.utc)
-UPDATED_AT = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
 WORD_COLUMNS = (
     "id", "word", "common_form", "hiragana", "meaning", "status_code",
-    "created_at", "updated_at", "created_by", "updated_by",
 )
 
 
 def database_row(
     word: str = "食べる", *, record_id: int = 7, meaning: str = "吃",
-    status_code: str = "A", created_by: str | None = "THOTH_MCP",
-    updated_by: str | None = "THOTH_MCP",
+    status_code: str = "A",
 ) -> tuple[object, ...]:
     """模拟驱动已经完成 PostgreSQL 类型适配的原始行。"""
     return (
         record_id, word, word, "たべる", meaning, status_code,
-        CREATED_AT, UPDATED_AT, created_by, updated_by,
     )
 
 
@@ -137,16 +131,16 @@ def test_find_existing_words_with_empty_input_does_not_query():
 
 
 def test_absent_word_is_created_with_all_fields_and_database_generated_values(complete_entity):
-    connection = ScriptedConnection(database_row(created_by="test-operator", updated_by="test-operator"))
+    connection = ScriptedConnection(database_row())
     result = WordTblMapper(connection, operator="test-operator").insert(complete_entity)
 
     assert isinstance(result, WordEntity)
     assert result is not complete_entity
     assert result.id == 7
     assert result.status_code == "A"
-    assert result.created_at == CREATED_AT
-    assert result.updated_at == UPDATED_AT
-    assert result.created_by == result.updated_by == "test-operator"
+    assert result.created_at is None
+    assert result.updated_at is None
+    assert result.created_by is result.updated_by is None
     query, params = connection.statements[-1]
     assert "INSERT INTO word_tbl" in query
     assert "ON CONFLICT (word) DO NOTHING" in query
@@ -169,8 +163,7 @@ def test_existing_update_only_changes_supplied_fields_and_returns_database_entit
 
     assert result == WordEntity(
         id=7, word="食べる", common_form="食べる", hiragana="たべる", meaning="吃；食用",
-        status_code="D", created_at=CREATED_AT, updated_at=UPDATED_AT,
-        created_by="THOTH_MCP", updated_by="THOTH_MCP",
+        status_code="D",
     )
     query, params = connection.statements[-1]
     assert params["common_form"] is None

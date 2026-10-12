@@ -1,5 +1,7 @@
 """add_update_words 工具的对外说明，供统一入口注册时使用。"""
 
+from thoth.common.tags import TAG_OPTIONS_DESCRIPTION
+
 ADD_UPDATE_WORDS_DESCRIPTION = """批量新增或修改日语单词，以 word 为唯一判重和更新定位依据。
 
 唯一参数 text 是 JSON 数组字符串，每个元素代表一个单词。以下展示解析后的结构，
@@ -40,4 +42,4 @@ text 不得包含 Markdown 标记或额外说明。
   index（从 0 开始）、word、status：created（已新增）、updated（已修改）、
   skipped（已跳过）或 failed（失败）。跳过和失败时附 reason；缺少新增信息时附 fields。
 - text 格式错误、无法连接数据库或查询已有单词失败时返回工具错误。
-"""
+""" + "\n" + TAG_OPTIONS_DESCRIPTION

@@ -46,7 +46,7 @@ class WordMissTblMapper:
         WHERE word_id = ANY(%(ids)s)
           AND EXISTS (SELECT 1 FROM word_tbl
                       WHERE id = word_miss_tbl.word_id AND status_code <> 'D')
-        RETURNING word_id, miss_count, created_at, updated_at, created_by, updated_by
+        RETURNING word_id, miss_count
         """
         with self._connection.cursor(row_factory=class_row(WordMissEntity)) as cursor:
             cursor.execute(sql, {"ids": [entity.word_id for entity in entities], "operator": operator})
@@ -55,7 +55,7 @@ class WordMissTblMapper:
     def find_for_update(self, word_id: int) -> WordMissEntity | None:
         """锁定已有计数记录，供清零判断；不存在返回 None，不创建记录。"""
         sql = """
-        SELECT word_id, miss_count, created_at, updated_at, created_by, updated_by
+        SELECT word_id, miss_count
         FROM word_miss_tbl WHERE word_id = %(word_id)s FOR UPDATE
         """
         with self._connection.cursor(row_factory=class_row(WordMissEntity)) as cursor:
@@ -72,7 +72,7 @@ class WordMissTblMapper:
         UPDATE word_miss_tbl SET miss_count = 0,
             updated_at = CURRENT_TIMESTAMP, updated_by = %(updated_by)s
         WHERE word_id = %(word_id)s AND miss_count <> 0
-        RETURNING word_id, miss_count, created_at, updated_at, created_by, updated_by
+        RETURNING word_id, miss_count
         """
         with self._connection.cursor(row_factory=class_row(WordMissEntity)) as cursor:
             cursor.execute(sql, {"word_id": entity.word_id, "updated_by": entity.updated_by})
