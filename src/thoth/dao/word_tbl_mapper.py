@@ -49,6 +49,20 @@ class WordTblMapper:
             cursor.execute(sql, self._parameters(entity))
             return cursor.fetchone()
 
+    def find_by_word_for_update(self, word: str) -> WordEntity | None:
+        """按原文查询并锁定单词；不存在返回 None，锁由调用方事务持有至结束。
+
+        包含已删除记录，由 Service 判断状态；行锁防止统计期间修改状态或删除。
+        """
+        sql = """
+        SELECT id, word, common_form, hiragana, meaning, status_code,
+               created_at, updated_at, created_by, updated_by
+        FROM word_tbl WHERE word = %(word)s FOR UPDATE
+        """
+        with self._connection.cursor(row_factory=class_row(WordEntity)) as cursor:
+            cursor.execute(sql, {"word": word})
+            return cursor.fetchone()
+
     def update(self, entity: WordEntity) -> WordEntity | None:
         """按 word 更新并锁行；None 信息字段保留原值，零行更新返回 None，由 Service 判断。"""
         # 只按 word 定位并更新三个信息字段及修改审计字段，不修改 word 或状态。

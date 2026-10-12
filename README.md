@@ -1,6 +1,6 @@
 # Thoth
 
-基于 Python、FastMCP 和 PostgreSQL 的日语单词 MCP 服务。目前仅提供 `save_words(text: str)`，由 AI 整理单词信息及标签，再通过固定业务接口写入已有的 `word_tbl` 和 `word_tag_tbl`。
+基于 Python、FastMCP 和 PostgreSQL 的日语单词 MCP 服务。提供 `add_update_words(text: str)`、`count_word_usage(text: str)`、`count_word_miss(text: str)` 和 `reset_word_miss(text: str)`，由 AI 整理单词信息及标签，再通过固定业务接口写入已有的 `word_tbl` 和 `word_tag_tbl`。
 
 服务不调用大模型、不生成向量，也不向 AI 提供任意 SQL 或表结构修改接口。项目原有依赖暂时保留。
 
@@ -23,7 +23,7 @@
 
 MCP 客户端应使用虚拟环境中 Python 的绝对路径，启动参数为 `-m thoth.mcp_server`。相关命令见 [doc/commands.md](doc/commands.md)。
 
-## save_words
+## add_update_words
 
 唯一参数 `text` 为非空 JSON 数组字符串，每个元素代表一个单词。下面展示字符串解析后的结构：
 
@@ -66,6 +66,51 @@ MCP 客户端应使用虚拟环境中 Python 的绝对路径，启动参数为 `
 }
 ```
 
+## 单词统计
+
+`count_word_usage(text: str)` 为使用次数加一，`count_word_miss(text: str)` 为错误次数加一。
+两者均接受单词字符串数组的 JSON 字符串，实际 MCP 参数示例：
+
+```json
+{"text":"[\"食べる\",\"飲む\"]"}
+```
+
+空数组正常返回空 `results`。null、空字符串、纯空白、非字符串及非法数据库文本
+逐项跳过；同批重复词仅首次出现项计数，后续项说明重复及首次下标。
+有效词按原文精确匹配，不去首尾空格。不存在或已删除的单词均跳过。
+不接受逗号分隔格式、word 对象或 fields 参数；对象元素作为非字符串跳过。
+
+每批通常三条 SQL：查询单词主表、批量插入缺失的零值统计行、批量将计数加一。
+只操作工具对应的统计表；写入时再次限定主表存在且未删除。
+使用 autocommit，不设置跨语句或逐词事务。初始化成功而加一失败时，零值行保留。
+批量写入失败则待计数项全部 failed，已过滤项仍 skipped；不自动降级逐项重试。
+主表并发变化可能导致跳过或整条语句失败，不承诺跨语句快照。
+
+返回 `results`，按原输入顺序包含零基 `index`、`word`、`status`。
+updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipped 和 failed 附 `reason`。
+无法安全输出的 word 为 null；只有最终 RETURNING 中的记录报告成功，处理期间未更新到
+的记录返回 skipped。每次成功调用均独立加一，没有请求幂等或自动重试保证。
+配置、连接、初始查询失败，以及非法 JSON、非数组顶层、非标准数值等返回工具错误。
+
+`reset_word_miss(text: str)` 使用相同的单词字符串数组输入：
+
+```json
+{"text":"[\"食べる\"]"}
+```
+
+清零仅操作已有错误计数，每词独立事务；没有记录或已经为零时跳过，不创建记录，
+不修改零值行审计信息，不影响使用次数。预处理与两个计数工具一致：无效元素跳过，
+重复词仅首次处理，后续项注明首次下标；空数组或全部过滤时不读取配置、不连接数据库。
+成功或已有零值时返回 `counts: {"miss_count": 0}`；无统计记录时省略 counts。
+
+各工具使用同名专属 Service 和 description，共享 `parse_word_list_text` 及结果转换能力。
+预处理返回 `WordListPreprocessResult`：status 为 continue 或 stop，message 承载终止原因。
+original_items 为包含 index、original_value 的 `WordListItem` 列表，pending_items 引用
+其中有效且去重的同一对象，skipped_results 保留跳过原因。输入 DTO 不包含数据库实体。
+执行结果与跳过结果合并后按原始 index 排序，原始输入不直接序列化。
+两张统计表各自 Mapper 返回 entity，DTO 承载输入及结果。
+数据库需预先存在 `word_miss_tbl` 和 `word_usage_tbl`，服务不会自动建表。
+
 ## 代码结构
 
 JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完整标签列表 `tags` 通过 DTO 传递。保存时先校验整批输入，再用一次查询取得已有的单词实体，随后按原顺序逐项校验标签、新增、修改或跳过。新增和修改通过 `RETURNING` 直接取得数据库保存后的实体，不增加逐词查询；新增时仍由唯一约束处理并发冲突，默认 `create` 不会覆盖已有信息。Service 管理每项事务，先更新单词取得行锁，再删除和重建标签关联，提交前发生任何错误均整项回滚。
@@ -74,8 +119,8 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 
 - `mcp_server.py`：启动 stdio MCP 服务，加载工具注册；启动命令保持不变。
 - `tools/mcp_tools.py`：统一注册所有 MCP 工具，入口仅调用对应 Service。
-- `descriptions/save_words_descriptions.py`：AI 可见的 save_words 工具说明；每个工具按完整工具名独立命名说明文件。
-- `service/save_words_service.py`：save_words MCP 工具专属的完整保存流程，包括解析校验、配置读取、连接管理、保存分支、并发冲突处理、单词与标签的逐项事务、响应转换和错误处理。
+- `descriptions/add_update_words_descriptions.py`：AI 可见的 add_update_words 工具说明；每个工具按完整工具名独立命名说明文件。
+- `service/add_update_words_service.py`：add_update_words MCP 工具专属的完整保存流程，包括解析校验、配置读取、连接管理、保存分支、并发冲突处理、单词与标签的逐项事务、响应转换和错误处理。
 - `dao/` 按一张表一个 `<表名>_mapper.py` 文件组织，尚无数据访问 SQL 的表暂不创建 mapper。
 - `dao/word_tbl_mapper.py`：`WordTblMapper` 封装单词查询、新增和更新 SQL 及实体行映射。
 - `dao/tag_tbl_mapper.py`：`TagTblMapper` 按编码查询已有标签，返回 `TagEntity`。
@@ -105,7 +150,7 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 .venv/bin/python -m thoth.mcp_server
 ```
 
-服务通过 stdio 提供 `save_words(text: str)`。配置 MCP 客户端时，将命令设为项目 `.venv/bin/python` 的绝对路径，参数设为：
+服务通过 stdio 提供 `add_update_words`、`count_word_usage`、`count_word_miss` 和 `reset_word_miss`，参数均为 `text: str`。配置 MCP 客户端时，将命令设为项目 `.venv/bin/python` 的绝对路径，参数设为：
 
 ```json
 ["-m", "thoth.mcp_server"]
@@ -118,3 +163,13 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 ```shell
 .venv/bin/python -m pytest
 ```
+
+## PostgreSQL 统计集成测试
+
+单元测试不需要数据库。真实并发、事务回滚和审计验证使用专用测试库：
+在项目根目录 `.env` 或运行环境中设置 `THOTH_TEST_PG_DSN`，指向独立数据库 `thoth_test`，再执行
+`.venv/bin/python -m pytest tests/integration`。
+进程环境变量优先于 `.env`，不会回退使用业务连接 `THOTH_PG_DSN`。
+每次连接会先确认实际数据库名为 `thoth_test`，确认后才允许写入。
+测试会在测试库中创建随机独立 schema，完成后删除该 schema；
+测试账号需要创建 schema 的权限。未设置测试 DSN 时，这组测试明确标记为跳过。

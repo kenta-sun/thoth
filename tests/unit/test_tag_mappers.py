@@ -8,7 +8,7 @@ import pytest
 from thoth.dao.tag_tbl_mapper import TagTblMapper
 from thoth.dao.word_tag_tbl_mapper import WordTagTblMapper
 from thoth.entity import TagEntity, WordTagEntity
-from thoth.service.save_words_service import parse_words_text, save_word_batch, serialize_word_batch
+from thoth.service.add_update_words_service import parse_words_text, save_word_batch, serialize_word_batch
 from tests.unit.test_word_repository import ScriptedConnection, database_row, CREATED_AT, UPDATED_AT
 
 

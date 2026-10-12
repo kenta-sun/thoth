@@ -11,9 +11,9 @@ import pytest
 from fastmcp import Client
 
 from thoth.tools import mcp_tools as mcp_server
-from thoth.service import save_words_service
+from thoth.service import add_update_words_service
 from thoth.db.connection import DatabaseError
-from thoth.service.save_words_service import MissingWordFieldsError
+from thoth.service.add_update_words_service import MissingWordFieldsError
 from thoth.entity import WordEntity, TagEntity
 
 
@@ -32,24 +32,24 @@ def backend(monkeypatch):
         update=Mock(return_value=WordEntity(id=1)),
     )
     repository_factory = Mock(return_value=repository)
-    monkeypatch.setattr(save_words_service, "get_settings", get_settings)
-    monkeypatch.setattr(save_words_service, "open_connection", open_connection)
-    monkeypatch.setattr(save_words_service, "WordTblMapper", repository_factory)
-    monkeypatch.setattr(save_words_service, "TagTblMapper", Mock(return_value=Mock(
+    monkeypatch.setattr(add_update_words_service, "get_settings", get_settings)
+    monkeypatch.setattr(add_update_words_service, "open_connection", open_connection)
+    monkeypatch.setattr(add_update_words_service, "WordTblMapper", repository_factory)
+    monkeypatch.setattr(add_update_words_service, "TagTblMapper", Mock(return_value=Mock(
         find_by_codes=Mock(side_effect=lambda codes: [TagEntity(code=code) for code in codes])
     )))
-    monkeypatch.setattr(save_words_service, "WordTagTblMapper", Mock())
+    monkeypatch.setattr(add_update_words_service, "WordTagTblMapper", Mock())
     return SimpleNamespace(
         settings=settings, get_settings=get_settings, open_connection=open_connection,
         connection=connection, repository=repository, repository_factory=repository_factory,
     )
 
 
-def call_save_words(text):
+def call_add_update_words(text):
     """通过内存客户端调用工具，返回包含结构化内容或工具错误的协议响应。"""
     async def run():
         async with Client(mcp_server.mcp) as client:
-            return await client.call_tool_mcp("save_words", {"text": text})
+            return await client.call_tool_mcp("add_update_words", {"text": text})
     return asyncio.run(run())
 
 
@@ -63,22 +63,22 @@ def test_import_does_not_read_configuration_or_connect(monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(config, "get_settings", get_settings)
         patch.setattr(connection, "open_connection", open_connection)
-        importlib.reload(save_words_service)
+        importlib.reload(add_update_words_service)
         importlib.reload(mcp_server)
         get_settings.assert_not_called()
         open_connection.assert_not_called()
-    importlib.reload(save_words_service)
+    importlib.reload(add_update_words_service)
     importlib.reload(mcp_server)
 
 
-def test_only_save_words_is_exposed_and_description_explains_default(backend):
+def test_tools_are_exposed_and_save_description_explains_default(backend):
     async def run():
         async with Client(mcp_server.mcp) as client:
             return await client.list_tools()
     tools = asyncio.run(run())
 
-    assert [tool.name for tool in tools] == ["save_words"]
-    tool = tools[0]
+    assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss"}
+    tool = next(tool for tool in tools if tool.name == "add_update_words")
     assert tool.inputSchema["required"] == ["text"]
     assert set(tool.inputSchema["properties"]) == {"text"}
     assert tool.inputSchema["properties"]["text"]["type"] == "string"
@@ -93,7 +93,7 @@ def test_only_save_words_is_exposed_and_description_explains_default(backend):
 
 @pytest.mark.parametrize("text", ["not json", "{}", "[]"])
 def test_invalid_json_is_protocol_error_before_database_access(backend, text):
-    result = call_save_words(text)
+    result = call_add_update_words(text)
     assert result.isError is True
     backend.get_settings.assert_not_called()
     backend.open_connection.assert_not_called()
@@ -105,7 +105,7 @@ def test_tool_returns_structured_per_word_results(backend):
         status_code="A", created_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
         created_by="test-operator", updated_by="test-operator",
     )
-    result = call_save_words(json.dumps([
+    result = call_add_update_words(json.dumps([
         {"tags": ["v"], "word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
         {"tags": ["v"], "word": "飲む", "operation": {"action": "delete"}},
     ]))
@@ -134,7 +134,7 @@ def test_tool_serializes_optional_reason_and_missing_fields_only_when_present(ba
     backend.repository.find_existing_words.return_value = [WordEntity(word="食べる")]
 
 
-    result = call_save_words(json.dumps([
+    result = call_add_update_words(json.dumps([
         {"tags": ["v"], "word": "食べる"},
         {"tags": ["v"], "word": "飲む", "meaning": "喝"},
         {"tags": ["v"], "word": "走る", "common_form": "走る", "hiragana": "はしる", "meaning": "跑"},
@@ -155,7 +155,7 @@ def test_tool_serializes_optional_reason_and_missing_fields_only_when_present(ba
 
 def test_database_connection_failure_is_protocol_error(backend):
     backend.open_connection.side_effect = DatabaseError("连接 PostgreSQL 失败，请检查配置。")
-    result = call_save_words('[{"tags": ["v"], "word":"食べる"}]')
+    result = call_add_update_words('[{"tags": ["v"], "word":"食べる"}]')
     assert result.isError is True
     assert "连接 PostgreSQL 失败" in str(result)
     backend.repository_factory.assert_not_called()
@@ -163,7 +163,7 @@ def test_database_connection_failure_is_protocol_error(backend):
 
 def test_batch_lookup_failure_is_protocol_error_without_writes(backend):
     backend.repository.find_existing_words.side_effect = DatabaseError("查询单词失败，请稍后重试。")
-    result = call_save_words(json.dumps([
+    result = call_add_update_words(json.dumps([
         {"tags": ["v"], "word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
         {"tags": ["v"], "word": "飲む", "meaning": "喝", "operation": {"action": "update"}},
     ]))
@@ -175,7 +175,7 @@ def test_batch_lookup_failure_is_protocol_error_without_writes(backend):
 
 
 def test_surrogate_word_returns_serializable_failure_without_disrupting_valid_word(backend):
-    result = call_save_words(json.dumps([
+    result = call_add_update_words(json.dumps([
         {"tags": ["v"], "word": "\ud800"},
         {"tags": ["v"], "word": "飲む", "common_form": "飲む", "hiragana": "のむ", "meaning": "喝"},
     ]))
@@ -193,7 +193,7 @@ def test_surrogate_word_returns_serializable_failure_without_disrupting_valid_wo
 
 def test_configuration_failure_is_protocol_error(backend):
     backend.get_settings.side_effect = ValueError("缺少 THOTH_PG_DSN。")
-    result = call_save_words('[{"tags": ["v"], "word":"食べる"}]')
+    result = call_add_update_words('[{"tags": ["v"], "word":"食べる"}]')
     assert result.isError is True
     assert "THOTH_PG_DSN" in str(result)
     backend.open_connection.assert_not_called()
@@ -202,7 +202,7 @@ def test_configuration_failure_is_protocol_error(backend):
 def test_text_parameter_does_not_accept_array(backend):
     async def run():
         async with Client(mcp_server.mcp) as client:
-            return await client.call_tool_mcp("save_words", {"text": [{"tags": ["v"], "word": "食べる"}]})
+            return await client.call_tool_mcp("add_update_words", {"text": [{"tags": ["v"], "word": "食べる"}]})
     result = asyncio.run(run())
     assert result.isError is True
     backend.get_settings.assert_not_called()
@@ -210,7 +210,7 @@ def test_text_parameter_does_not_accept_array(backend):
 
 @pytest.mark.parametrize("tags", [None, [], [""]])
 def test_required_tags_failure_is_per_item_and_does_not_save(backend, tags):
-    result = call_save_words(json.dumps([{
+    result = call_add_update_words(json.dumps([{
         "word": "食べる", "tags": tags, "operation": {"action": "update"},
     }]))
     assert result.isError is False

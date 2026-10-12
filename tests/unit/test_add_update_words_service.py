@@ -11,8 +11,8 @@ import pytest
 from thoth.db.connection import DatabaseError
 from thoth.entity import WordEntity, TagEntity, WordTagEntity
 from thoth.dto.word import WordInput
-from thoth.service import save_words_service as service
-from thoth.service.save_words_service import parse_words_text, save_word_batch, serialize_word_batch
+from thoth.service import add_update_words_service as service
+from thoth.service.add_update_words_service import parse_words_text, save_word_batch, serialize_word_batch
 
 
 class MemoryTransaction:

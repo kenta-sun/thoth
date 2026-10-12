@@ -6,14 +6,35 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from thoth.service import save_words_service
-from thoth.descriptions.save_words_descriptions import SAVE_WORDS_DESCRIPTION
+from thoth.service import add_update_words_service, count_word_usage_service, count_word_miss_service, reset_word_miss_service
+from thoth.descriptions.count_word_usage_descriptions import COUNT_WORD_USAGE_DESCRIPTION
+from thoth.descriptions.count_word_miss_descriptions import COUNT_WORD_MISS_DESCRIPTION
+from thoth.descriptions.reset_word_miss_descriptions import RESET_WORD_MISS_DESCRIPTION
+from thoth.descriptions.add_update_words_descriptions import ADD_UPDATE_WORDS_DESCRIPTION
 
 # 启用严格参数校验，拒绝将数组直接传给字符串参数 text。
 mcp = FastMCP(name="thoth-words", strict_input_validation=True)
 
 
-@mcp.tool(description=SAVE_WORDS_DESCRIPTION)
-def save_words(text: str) -> dict[str, list[dict[str, Any]]]:
+@mcp.tool(description=ADD_UPDATE_WORDS_DESCRIPTION)
+def add_update_words(text: str) -> dict[str, list[dict[str, Any]]]:
     """将单词 JSON 数组字符串交给 Service，返回逐项结果；ToolError 由框架转为工具错误。"""
-    return save_words_service.save_words(text)
+    return add_update_words_service.add_update_words(text)
+
+
+@mcp.tool(description=COUNT_WORD_USAGE_DESCRIPTION)
+def count_word_usage(text: str) -> dict[str, list[dict[str, Any]]]:
+    """将单词字符串数组交给使用计数 Service，返回逐项结果。"""
+    return count_word_usage_service.count_word_usage(text)
+
+
+@mcp.tool(description=COUNT_WORD_MISS_DESCRIPTION)
+def count_word_miss(text: str) -> dict[str, list[dict[str, Any]]]:
+    """将单词字符串数组交给错误计数 Service，返回逐项结果。"""
+    return count_word_miss_service.count_word_miss(text)
+
+
+@mcp.tool(description=RESET_WORD_MISS_DESCRIPTION)
+def reset_word_miss(text: str) -> dict[str, list[dict[str, Any]]]:
+    """将清零 JSON 数组字符串交给专属 Service，返回逐项结果。"""
+    return reset_word_miss_service.reset_word_miss(text)

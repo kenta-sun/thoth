@@ -1,4 +1,4 @@
-"""save_words MCP 工具的专属 Service：解析校验、管理连接、保存并返回结果。"""
+"""add_update_words MCP 工具的专属 Service：解析校验、管理连接、保存并返回结果。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ INFORMATION_FIELDS = ("common_form", "hiragana", "meaning")
 ALLOWED_FIELDS = {"word", *INFORMATION_FIELDS, "operation", "tags"}
 
 
-def save_words(text: str) -> dict[str, list[dict[str, Any]]]:
+def add_update_words(text: str) -> dict[str, list[dict[str, Any]]]:
     """解析单词 JSON 数组并保存，按输入顺序返回 results。
 
     本次调用共用一条连接，结束时关闭；每项单词及标签写入独立提交或回滚。
