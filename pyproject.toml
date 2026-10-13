@@ -26,6 +26,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/thoth"]
 
+# 源码发布包只包含程序及构建元数据，不携带任何运行环境文件。
+[tool.hatch.build.targets.sdist]
+include = ["/src/thoth", "/pyproject.toml", "/README.md", "/LICENSE"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # -ra 在结尾汇总非通过用例的原因。

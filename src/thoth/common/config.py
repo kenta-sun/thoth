@@ -1,6 +1,7 @@
 """公共配置层：按运行环境合并配置，供业务服务和数据库连接层使用。
 
-配置来自公共 .env、选定的环境文件及进程变量，不修改 os.environ。
+配置目录可由进程 THOTH_CONFIG_DIR 指定；配置来自公共 .env、选定环境文件及进程变量，
+不修改 os.environ。
 业务服务首次读取时缓存配置；集成测试显式选择 test，不跟随日常环境。
 """
 
@@ -14,7 +15,7 @@ from types import MappingProxyType
 
 from dotenv import dotenv_values
 
-# 按源码位置确定配置目录，不依赖 MCP 客户端的工作目录。
+# 源码开发默认目录；安装包通过 THOTH_CONFIG_DIR 使用独立配置目录。
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ENV_DATABASES = MappingProxyType({"dev": "thoth_dev", "test": "thoth_test", "prd": "thoth_memory"})
 
@@ -41,15 +42,26 @@ def load_settings(environment: str | None = None, *, root: Path | None = None) -
     Args:
         environment: 显式选择的环境；None 时按进程 THOTH_ENV、公共 .env 的顺序选择。
             测试入口固定传 test，覆盖日常环境选择。
-        root: 配置文件目录；None 时使用项目根目录。
+        root: 显式配置目录，优先于进程变量；None 时使用 THOTH_CONFIG_DIR，
+            未设置该变量时使用源码项目根目录。
 
     Returns:
         不含全局环境变量副作用的配置；值优先级为进程、环境文件、公共文件。
 
     Raises:
-        ValueError: 环境非法、环境文件缺失、连接串缺失或审计标识过长。
+        ValueError: 配置目录变量为空、不是绝对路径或不是现有目录，或环境非法、
+            环境文件缺失、连接串缺失、审计标识过长。
     """
-    directory = PROJECT_ROOT if root is None else root
+    directory = root
+    if directory is None:
+        configured_directory = os.environ.get("THOTH_CONFIG_DIR")
+        if configured_directory is None:
+            directory = PROJECT_ROOT
+        else:
+            # 显式配置必须有效，不回退开发目录；绝对路径避免随客户端工作目录变化。
+            directory = Path(configured_directory)
+            if not configured_directory.strip() or not directory.is_absolute() or not directory.is_dir():
+                raise ValueError("THOTH_CONFIG_DIR 必须为现有目录的绝对路径。")
     # 不插值，避免 dotenv 隐式读取进程变量或把其他环境的连接串带入。
     common = dotenv_values(directory / ".env", interpolate=False)
     selected = environment if environment is not None else os.environ.get("THOTH_ENV", common.get("THOTH_ENV"))

@@ -51,6 +51,7 @@ bin/
 
 # python
 .venv/
+dist/
 **/__pycache__/
 
 # Java & Maven (Build System)

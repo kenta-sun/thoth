@@ -11,7 +11,7 @@ from tests.integration import test_word_stats_postgres as integration
 @pytest.fixture
 def profiles(tmp_path, monkeypatch):
     """为三个环境准备独立配置，屏蔽宿主机的配置变量。"""
-    for key in ("THOTH_ENV", "THOTH_PG_DSN", "THOTH_OPERATOR"):
+    for key in ("THOTH_ENV", "THOTH_PG_DSN", "THOTH_OPERATOR", "THOTH_CONFIG_DIR"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".env").write_text("THOTH_ENV=dev\nTHOTH_OPERATOR=common\n")
@@ -132,3 +132,48 @@ def test_settings_cache_requires_explicit_refresh(profiles, monkeypatch):
     assert config.get_settings().environment == "dev"
     config.get_settings.cache_clear()
     assert config.get_settings().environment == "test"
+
+
+def test_external_configuration_directory_is_independent_of_cwd(profiles, tmp_path, monkeypatch):
+    """安装包从独立目录加载配置，不受源码默认目录和启动位置影响。"""
+    external = tmp_path / "正式配置"
+    external.mkdir()
+    (external / ".env").write_text("THOTH_ENV=prd\nTHOTH_OPERATOR=release\n")
+    (external / ".env.prd").write_text("THOTH_PG_DSN=postgresql://u:p@invalid.test/thoth_memory\n")
+    monkeypatch.setenv("THOTH_CONFIG_DIR", str(external))
+    monkeypatch.chdir(tmp_path.parent)
+    settings = config.load_settings()
+    assert settings.environment == "prd"
+    assert settings.operator == "release"
+    assert settings.pg_dsn.endswith("/thoth_memory")
+
+
+def test_explicit_root_overrides_directory_environment(profiles, monkeypatch):
+    """测试等显式调用方指定 root 时，不使用进程配置目录。"""
+    monkeypatch.setenv("THOTH_CONFIG_DIR", "/nonexistent/thoth-config")
+    assert config.load_settings(root=profiles).environment == "dev"
+
+
+@pytest.mark.parametrize("value", ["", "  ", "relative/config", "/nonexistent/thoth-config"])
+def test_invalid_configuration_directory_does_not_fall_back(profiles, monkeypatch, value):
+    """无效目录不得悄悄使用开发配置。"""
+    monkeypatch.setenv("THOTH_CONFIG_DIR", value)
+    with pytest.raises(ValueError, match="THOTH_CONFIG_DIR"):
+        config.load_settings()
+
+
+def test_configuration_directory_cannot_be_file(profiles, monkeypatch):
+    """目录变量指向普通文件时明确报错。"""
+    monkeypatch.setenv("THOTH_CONFIG_DIR", str(profiles / ".env"))
+    with pytest.raises(ValueError, match="THOTH_CONFIG_DIR"):
+        config.load_settings()
+
+
+def test_external_directory_missing_profile_does_not_use_source(profiles, tmp_path, monkeypatch):
+    """独立目录缺少环境文件时，不借用源码目录已有的环境配置。"""
+    external = tmp_path / "empty-config"
+    external.mkdir()
+    monkeypatch.setenv("THOTH_CONFIG_DIR", str(external))
+    monkeypatch.setenv("THOTH_ENV", "dev")
+    with pytest.raises(ValueError, match="缺少环境配置文件"):
+        config.load_settings()
