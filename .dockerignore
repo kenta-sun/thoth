@@ -1,0 +1,13 @@
+# 仅发送构建必要文件，所有环境文件、凭证及本地目录均不进入构建上下文。
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!src/
+!src/thoth/
+!src/thoth/**
+**/__pycache__/**
+**/*.pyc
+**/.env*
+**/secrets/**

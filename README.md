@@ -2,15 +2,15 @@
 
 基于 Python、FastMCP 和 PostgreSQL 的日语单词 MCP 服务。提供单词写入、使用与陌生计数、清零、查询及已有用户查询。参数直接使用 JSON 数组和对象，FastMCP 根据类型定义生成带中文字段说明的输入、输出 Schema。
 
-服务不调用大模型、不生成向量，也不向 AI 提供任意 SQL 或表结构修改接口。项目原有依赖暂时保留。
+服务不调用大模型、不生成向量，也不向 AI 提供任意 SQL 或表结构修改接口。运行依赖仅保留 FastMCP、Pydantic、dotenv 和 PostgreSQL 驱动。
 
 ## 配置与启动
 
 使用 Python 3.11 或更高版本，以及项目现有的虚拟环境。源码开发默认从项目根目录读取配置；
-安装包部署时，通过进程变量 `THOTH_CONFIG_DIR` 指定现有配置目录的绝对路径，不依赖启动时的工作目录。
-完整的打包、独立安装、生产配置填写和「日本語」项目接入步骤见 [正式部署操作手册](doc/deployment.md)。
+Docker 部署时，通过进程变量 `THOTH_CONFIG_DIR` 指定现有配置目录的绝对路径，不依赖启动时的工作目录。
+完整的 Docker 构建、生产配置填写和「日本語」项目 HTTP 接入步骤见 [正式部署操作手册](doc/deployment.md)。
 
-首次配置时复制 `.env.example` 为 `.env`，复制需要使用的 `.env.dev.example`、`.env.test.example` 或 `.env.prd.example` 为对应环境文件，并填写真实数据库凭证。正式生产配置仅放在正式部署目录；真实 `.env` 和 `.env.*` 文件均不提交 Git。
+首次配置时复制 `.env.example` 为 `.env`，复制需要使用的 `.env.dev.example`、`.env.test.example` 或 `.env.prd.example` 为对应环境文件，并填写真实数据库凭证。Docker 部署使用项目根目录的 `.env.prd`，只读挂载进容器；真实 `.env` 和 `.env.*` 文件均不提交 Git。
 
 | 文件 | 用途 | 数据库示例 |
 | --- | --- | --- |
@@ -21,7 +21,7 @@
 
 | 配置项 | 说明 |
 | --- | --- |
-| `THOTH_CONFIG_DIR` | 可选，仅从进程变量读取。设置时必须是现有目录的绝对路径；空值、相对路径和不存在的目录报错，不回退源码目录。wheel 安装必须显式设置。 |
+| `THOTH_CONFIG_DIR` | 可选，仅从进程变量读取。设置时必须是现有目录的绝对路径；空值、相对路径和不存在的目录报错，不回退源码目录。Compose 已设为容器内的 `/config`。 |
 | `THOTH_ENV` | 必填，仅允许 `dev`、`test`、`prd`；进程变量优先于公共 `.env`。 |
 | `THOTH_PG_DSN` | 必填，存放在选中的环境文件或进程变量中。三个环境使用相同配置名。 |
 | `THOTH_OPERATOR` | 可选，写入审计字段的操作者标识，默认 `THOTH_MCP`。 |
@@ -33,26 +33,22 @@
 
 运行服务的目标数据库完全由 `THOTH_PG_DSN` 指定，代码不限制数据库名称。`THOTH_ENV` 只选择配置文件，不绑定库名。请通过各环境的连接配置及数据库账号权限隔离开发与正式数据。集成测试另有独立的测试库保护。
 
+源码开发时，在项目根目录启动 HTTP 服务（默认 `127.0.0.1:8000`）：
+
 ```shell
-# 采用 .env 中的默认环境
 .venv/bin/python -m thoth.mcp_server
-# 在正式部署目录显式选择生产环境
-THOTH_ENV=prd .venv/bin/python -m thoth.mcp_server
 ```
 
-MCP 客户端也可在服务启动配置的 `env` 中设置 `THOTH_ENV`。Docker 自带 PostgreSQL MCP 使用它自己的连接设置，不读取本项目环境文件，开发时继续指向 `thoth_dev`。
+Docker 正式运行由 Compose 设置 `THOTH_ENV=prd`；HTTP 客户端只填写 URL，不负责启动 Python 进程或传递数据库配置。
+监听地址和端口可通过进程变量 `FASTMCP_HOST`、`FASTMCP_PORT` 设置；容器内部监听 `0.0.0.0:8000`，Compose 仅发布到宿主机 `127.0.0.1:8000`。
 
 迁移旧配置时，将公共 `.env` 中的 `THOTH_PG_DSN` 移入 `.env.dev`，将 `THOTH_TEST_PG_DSN` 移入 `.env.test` 并改名为 `THOTH_PG_DSN`；旧测试变量不再读取。
 
 运行不需要 OpenAI API Key。服务使用已有的单词表、标签表及关联表，不自动建表、修改表结构或调整数据库账号权限。
 
-在项目根目录启动 stdio MCP 服务：
-
-```shell
-.venv/bin/python -m thoth.mcp_server
-```
-
-MCP 客户端应使用虚拟环境中 Python 的绝对路径，启动参数为 `-m thoth.mcp_server`。相关命令见 [doc/commands.md](doc/commands.md)。
+MCP 使用 Streamable HTTP，端点为 `http://127.0.0.1:8000/mcp`。六个业务工具的参数和响应保持不变。
+服务启用 Host/Origin 检查，当前部署面向本机客户端，没有配置远程用户认证；不要直接公开到局域网或公网。
+相关命令见 [Docker 部署手册](doc/deployment.md)。
 
 ## 用户与统计归属
 
@@ -320,10 +316,11 @@ JSON 参数 → FastMCP 校验 → 请求模型 → 工具入口映射 → 内�
 .venv/bin/python -m thoth.mcp_server
 ```
 
-服务通过 stdio 提供 `add_update_words`、`count_word_usage`、`count_word_miss`、`reset_word_miss` 和 `query_words`，五个有参工具接收 `username` 与原生 `words` 数组或 `query` 对象，另提供无参数的 `query_users()`。配置 MCP 客户端时，将命令设为项目 `.venv/bin/python` 的绝对路径，参数设为：
+服务通过 Streamable HTTP 提供六个工具。日语项目的 `.codex/config.toml` 使用以下配置：
 
-```json
-["-m", "thoth.mcp_server"]
+```toml
+[mcp_servers.thoth]
+url = "http://127.0.0.1:8000/mcp"
 ```
 
 数据库中应已存在用户表、单词表、状态表、标签表、关联表和两张统计表；用户和标签字典需事先维护；启动服务不会执行建表、扩展安装或账号权限变更。

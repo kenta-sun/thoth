@@ -1,43 +1,69 @@
-# Thoth 正式部署操作手册
+# Thoth Docker 部署操作手册
 
-目标：开发继续使用 thoth 源码目录；「日本語」项目调用独立安装的稳定版本，连接你配置的正式数据库（本文以 `thoth_memory` 为例，名称可自定义）。
-MCP 使用 stdio，由 Codex 启动本地进程，不需要额外开启 HTTP 服务、购买服务器或发布到 PyPI。
+本方案把 Python、运行依赖和 MCP 程序一起放进 Docker 镜像，由 Docker 持续运行服务。
+「日本語」项目通过 `http://127.0.0.1:8000/mcp` 调用服务。正式运行不需要在宿主机安装 wheel、创建虚拟环境或管理版本目录。
 
-以下命令按当前电脑路径编写，在同一个 macOS 终端窗口中按顺序逐块执行。每个 shell 代码块是一条完整命令，执行成功后再复制下一块。任何一步报错，都先停在该步处理，成功后再继续。
-文件内容使用文本编辑器填写；不要将密码直接写进终端命令。本文中的 `YOUR_USER`、`YOUR_PASSWORD` 必须替换。
+```text
+日本語项目 → HTTP /mcp → Docker 中的 Thoth → 已有 PostgreSQL
+```
 
-## 1. 确认工具与正式数据库
+源码直接复制进镜像，依赖由 `uv.lock` 固定。真实配置不进入构建上下文或镜像，启动时单独只读挂载。
+配置目录变量 `THOTH_CONFIG_DIR` 保留，用来告诉容器去 `/config` 读取配置；数据库名称由连接串决定。
 
-进入 thoth 开发项目目录，后面的相对路径以这里为起点。
+每个 shell 代码块是一条完整命令，按顺序在同一个 macOS 终端窗口执行，报错时先停止处理。配置代码块是文件内容，不在终端执行。
+
+## 1. 确认 Docker Desktop 已运行
+
+先打开 Docker Desktop，等待引擎启动。然后进入项目目录：
 
 ```shell
 cd /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth
 ```
 
-确认 uv 已安装，并查看版本。
+确认 Docker 引擎能响应；失败时先处理 Docker Desktop：
 
 ```shell
-uv --version
+docker info
 ```
 
-确认开发环境的 Python 版本。
+确认 Docker Compose 可用：
 
 ```shell
-.venv/bin/python --version
+docker compose version
 ```
 
-当前开发环境已有 uv 和 Python 3.11。下文沿用该 Python 创建独立虚拟环境；它依赖本机的基础 Python，升级时不要删除正在使用的基础 Python。
+后续所有 Compose 命令显式使用 `--env-file /dev/null`，避免 Compose 自动读取开发用的 `.env`。容器环境选择已在 `compose.yaml` 中明确设置为 `prd`。
 
-开发配置使用 `localhost:12001/thoth_dev`。如果正式库也在同一个 PostgreSQL 实例，正式连接使用 `localhost:12001/thoth_memory`；若正式库在另一台机器，后面同时修改主机和端口。
-打包安装不会创建数据库，也不会复制开发数据。
+## 2. 手动准备生产配置
 
-在你自己的数据库客户端选择正式库，先手动执行这条只读 SQL，确认当前连接的数据库名称：
+用文本编辑器打开或创建项目根目录的 `.env.prd`：
+
+```text
+/Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/.env.prd
+```
+
+把下面这一行粘贴到文件里，替换账号、密码和数据库名称。已有配置时手动编辑原文件，不要直接覆盖真实凭证。
+
+```dotenv
+THOTH_PG_DSN=postgresql://YOUR_USER:YOUR_PASSWORD@host.docker.internal:12001/YOUR_DATABASE
+```
+
+开发配置的地址是 `localhost:12001`。在 Docker Desktop 容器中，`localhost` 指容器自身，因此改成 `host.docker.internal:12001` 来访问 Mac 上发布的 PostgreSQL 端口。
+若 PostgreSQL 在远程服务器，改用它真实的主机和端口。`YOUR_DATABASE` 填实际正式库名，例如 `thoth_prd`，程序不限制名称。
+用户名或密码中的 `@`、`:`、`/`、`#`、`%` 等 URL 特殊字符需要进行百分号编码；SSL 等参数按数据库要求填写。
+
+不需要创建额外的正式 `.env`：Compose 已设置 `THOTH_ENV=prd` 和 `THOTH_OPERATOR=THOTH_MCP`，只挂载 `.env.prd`。
+真实文件不提交 Git。源码中的 `.env.prd.example` 是可参考的脱敏模板。
+
+## 3. 确认数据库已准备好
+
+在你自己的数据库客户端连接正式库，执行下面这一条只读 SQL，核对目标数据库：
 
 ```sql
 SELECT current_database();
 ```
 
-再执行下面这一条 SQL，检查七张表是否存在。这条 SQL 虽然分为多行，仍需整块复制执行：
+执行下面这一条只读 SQL，确认七张表存在（整个代码块是一条 SQL）：
 
 ```sql
 SELECT name, to_regclass(name) AS existing_table
@@ -47,267 +73,165 @@ FROM unnest(ARRAY[
 ]) AS tables(name);
 ```
 
-第一个结果应是你准备使用的正式数据库名称（本文示例为 `thoth_memory`），第二个结果的七张表都应该存在。已有正式数据时保留原库，不执行重建脚本；缺表或结构不匹配时先单独处理数据库迁移，再继续安装。
-
-只有你确认这是全新、允许清空的目标库时，才可手动执行项目中的 `sql/rebuild_all.sql` 初始化。
-**该脚本会删除并重建七张表，已有数据会被清空；它不是日常安装或升级步骤。**
-
-表准备好后，执行这条只读 SQL，查看已有用户名：
+查看已有用户名：
 
 ```sql
 SELECT username FROM user_tbl ORDER BY id;
 ```
 
-执行这条只读 SQL，查看标签数量，确认标签已初始化：
+查看标签是否已初始化：
 
 ```sql
 SELECT count(*) AS tag_count FROM tag_tbl;
 ```
 
-标签应已初始化。用户名不存在时，可执行以下语句（需要其他用户名时替换 `ethan`）：
+用户名尚不存在时，才执行下面这一条 SQL（按需替换 `ethan`）：
 
 ```sql
 INSERT INTO user_tbl (username) VALUES ('ethan')
 ON CONFLICT (username) DO NOTHING;
 ```
 
-## 2. 验证代码、打包并导出固定版本依赖
+镜像不包含数据库，也不创建或迁移表。已有数据时不要执行 `sql/rebuild_all.sql`，它会清空并重建七张表。
+只有确认是允许清空的全新目标库，才手动用该脚本初始化表和字典；缺表但需要保留数据时，应另行迁移。
 
-进入 thoth 开发项目目录，后面的相对路径以这里为起点。
+## 4. 构建镜像
+
+执行这条命令，根据 Dockerfile 构建 `thoth:local` 镜像。首次构建需要联网下载基础镜像和 Python 依赖：
 
 ```shell
-cd /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth
+docker compose --env-file /dev/null build
 ```
 
-按照锁文件安装开发依赖，准备测试和打包环境。
+Dockerfile 使用多阶段构建，只把运行依赖和源码放入最终镜像；不会安装 OpenAI SDK、pgvector 或 pytest。
+`.dockerignore` 仅放行源码及构建元数据，排除真实配置、Git、本机虚拟环境、旧安装包和敏感目录。
+这一步不读取生产配置内容，也不连接数据库。
+
+## 5. 启动容器并检查状态
+
+后台启动服务，终端退出后服务仍运行；缺少 `.env.prd` 文件时启动会报错：
+
+```shell
+docker compose --env-file /dev/null up -d
+```
+
+查看状态和端口映射：
+
+```shell
+docker compose --env-file /dev/null ps
+```
+
+查看最近的启动日志：
+
+```shell
+docker compose --env-file /dev/null logs --tail=50 thoth
+```
+
+容器监听 `0.0.0.0:8000`，宿主机仅发布 `127.0.0.1:8000`，没有配置远程用户认证，因此保持本机访问。
+Host/Origin 检查仅接受本机地址。不要把端口映射改成对外公开地址来直接提供公网服务。
+`healthy` 只代表 HTTP 监听进程存活，不代表数据库配置、权限或表结构已验证；第 7 步查询成功后才能确认业务可用。
+`restart: unless-stopped` 会在 Docker 引擎运行时恢复服务；Mac 重启后仍需要 Docker Desktop 启动。
+
+## 6. 在「日本語」项目配置 HTTP MCP
+
+用文本编辑器打开或创建下面这个文件；没有 `.codex` 文件夹时先手动创建：
+
+```text
+/Users/ethan/Documents/Japanese/.codex/config.toml
+```
+
+将下面整块配置粘贴到文件中：
+
+```toml
+[mcp_servers.thoth]
+url = "http://127.0.0.1:8000/mcp"
+```
+
+如果已有同名 thoth 配置，替换整个旧 thoth 配置块，并删除旧的 `[mcp_servers.thoth.env]` 块；保留其他服务设置。
+HTTP 配置不再使用 `command`、`args`、`cwd` 或数据库环境变量。旧全局配置中若也存在同名 thoth，清除它的旧启动字段，避免配置合并后冲突。
+
+现在由 Docker 负责启动和运行 MCP，Codex 只负责通过 URL 连接。这个地址是 MCP 协议端点，不是给浏览器浏览的普通网页。
+Codex 需信任该项目才能加载项目配置；保存后重启应用，在「日本語」项目新建聊天。
+
+## 7. 验证 HTTP 工具及数据库
+
+在新聊天中发送下面这句话，进行只读验证：
+
+> 使用 thoth 的 query_users 查询已有用户，只执行查询，不修改数据。
+
+成功返回用户名表示 HTTP MCP、生产配置、数据库连接和用户表查询都已正常工作。
+
+再发送下面这句话，用户名替换为第 3 步确认的实际用户名：
+
+> 使用 thoth 的 query_words，为用户名 ethan 查询最多 5 个单词，只执行查询。
+
+对应参数为 `{"username":"ethan","query":{"limit":5}}`。空词库返回空数组正常。
+查询成功后，就可以在日语项目使用该 MCP；开发源码后续修改不会影响当前镜像中的程序。
+
+## 8. 更新、重启与停止
+
+修改代码后，重新构建镜像：
+
+```shell
+docker compose --env-file /dev/null build
+```
+
+使用新镜像重新创建服务：
+
+```shell
+docker compose --env-file /dev/null up -d --force-recreate
+```
+
+只修改 `.env.prd` 后，也使用上面这条重新创建命令，让容器重新挂载文件并清除进程内的配置缓存，不需要重新构建镜像。
+
+临时停止服务：
+
+```shell
+docker compose --env-file /dev/null stop
+```
+
+重新启动已停止的服务：
+
+```shell
+docker compose --env-file /dev/null up -d
+```
+
+删除本项目的服务容器和 Compose 网络：
+
+```shell
+docker compose --env-file /dev/null down
+```
+
+本 Compose 没有定义 PostgreSQL 服务或数据库数据卷，以上命令不会删除已有数据库或本地 `.env.prd`。
+
+## 常见问题
+
+| 现象 | 处理方式 |
+| --- | --- |
+| Docker 引擎连接失败 | 打开 Docker Desktop，等待引擎启动。 |
+| 宿主机 8000 端口占用 | 停止占用它的开发 HTTP 服务，或把 Compose 左侧端口改为 `127.0.0.1:8001:8000`，客户端 URL 同步改为 8001。 |
+| 挂载文件不存在 | 手动创建项目根目录的 `.env.prd`，确认不是 `.env.prd.txt`。 |
+| 数据库连接失败 | 检查使用的是 `host.docker.internal`、宿主机端口、正确账号密码和库名，并确认数据库可接受该连接。 |
+| 用户不存在 | 核对数据库中已有用户名，大小写和中文必须一致。 |
+| 工具没有出现 | 核对项目受信任、URL 为 `/mcp`、容器在运行，并清理旧的 stdio 配置后重启 Codex。 |
+| 浏览器打开端点报错 | MCP 需要协议请求头和握手，用第 7 步的 MCP 客户端调用验证。 |
+
+## 本机开发环境维护（不影响 Docker 部署）
+
+Docker 构建不使用宿主机的 `.venv`。如果旧依赖卸载后出现 `METADATA` 缺失、目录无法删除等错误，可以重建本机开发环境：
+
+1. 停止使用开发虚拟环境的 Python 进程。
+2. 在 Finder 中显示隐藏文件，删除本项目的 `.venv` 文件夹（仅包含本机 Python 环境，不是 `src` 源码，也不是 `.env` 配置文件）。
+3. 在项目根目录执行下面这条命令，按当前锁文件重建环境：
 
 ```shell
 uv sync --locked
 ```
 
-运行全部单元测试；全部通过后再继续。忽略生产配置文件及敏感目录，避免测试收集扫描它们。
+重建完成后运行单元测试：
 
 ```shell
 .venv/bin/python -m pytest tests/unit --ignore=.env.prd --ignore=secrets
 ```
 
-构建 wheel 安装包，输出到开发项目的 dist 目录。
-
-```shell
-uv build --wheel --out-dir dist
-```
-
-从锁文件导出正式运行依赖和校验哈希，保存到 dist/requirements.lock.txt。
-
-```shell
-uv export --locked --no-dev --no-emit-project --output-file dist/requirements.lock.txt --quiet
-```
-
-当前版本产物是 `dist/thoth-0.1.0-py3-none-any.whl` 和 `dist/requirements.lock.txt`。
-前者包含程序，后者从 `uv.lock` 导出正式运行依赖及校验哈希，不包含 pytest 和源码的可编辑安装引用。
-运行依赖仍使用项目原有列表，没有为部署额外增加依赖。wheel 不包含 `.env`、真实凭证或数据库数据；SQL 文件保留在源码项目，手动维护数据库时使用。
-
-## 3. 创建正式目录并安装程序
-
-创建正式配置目录，后面在这里手动保存配置文件。
-
-```shell
-mkdir -p /Users/ethan/.local/share/thoth/config
-```
-
-创建 0.1.0 版本的独立部署目录。
-
-```shell
-mkdir -p /Users/ethan/.local/share/thoth/releases/0.1.0
-```
-
-将正式配置目录设为仅当前用户可以访问。
-
-```shell
-chmod 700 /Users/ethan/.local/share/thoth/config
-```
-
-把 wheel 安装包复制到正式版本目录保存。
-
-```shell
-cp /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/dist/thoth-0.1.0-py3-none-any.whl /Users/ethan/.local/share/thoth/releases/0.1.0/
-```
-
-把固定版本依赖清单复制到正式版本目录保存。
-
-```shell
-cp /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/dist/requirements.lock.txt /Users/ethan/.local/share/thoth/releases/0.1.0/
-```
-
-为正式版本创建独立 Python 虚拟环境。
-
-```shell
-uv venv /Users/ethan/.local/share/thoth/releases/0.1.0/.venv --python /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/.venv/bin/python
-```
-
-按照依赖清单安装正式依赖，并校验下载文件的哈希。
-
-```shell
-uv pip sync --python /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python /Users/ethan/.local/share/thoth/releases/0.1.0/requirements.lock.txt --require-hashes
-```
-
-将 thoth 安装包安装到正式虚拟环境；依赖已在上一条命令中安装。
-
-```shell
-uv pip install --python /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python --no-deps /Users/ethan/.local/share/thoth/releases/0.1.0/thoth-0.1.0-py3-none-any.whl
-```
-
-检查正式虚拟环境中的依赖是否完整、版本是否兼容。
-
-```shell
-uv pip check --python /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python
-```
-
-该步骤仅用于首次安装此版本。若此版本目录已在使用，不在里面反复重建虚拟环境；升级用新版本目录，见文末。
-依赖同步必须在安装 wheel 之前执行，因为 `uv pip sync` 会移除依赖清单之外的包，包括已经安装的 thoth。
-
-## 4. 手动填写正式配置
-
-配置目录固定为 `/Users/ethan/.local/share/thoth/config`。在该目录手动创建以下两个隐藏文件。
-Finder 可用 `Command + Shift + G` 输入目录，再用 `Command + Shift + .` 显示隐藏文件。
-文本编辑器保存为纯文本，确保没有多加 `.txt` 后缀。
-
-文件一：`/Users/ethan/.local/share/thoth/config/.env`。以下是文件内容，请整块粘贴到文件中，不在终端执行：
-
-```dotenv
-THOTH_ENV=prd
-THOTH_OPERATOR=THOTH_MCP
-```
-
-文件二：`/Users/ethan/.local/share/thoth/config/.env.prd`。以下是文件内容，请替换占位符后粘贴到文件中，不在终端执行：
-
-```dotenv
-THOTH_PG_DSN=postgresql://YOUR_USER:YOUR_PASSWORD@localhost:12001/thoth_memory
-```
-
-这份模板参照开发配置的字段、主机和端口，数据库名称以 `thoth_memory` 为例；请改为你的实际正式库名，程序不限制名称。
-使用有正式库访问权限的数据库账号和密码，不要把连接串写进公共 `.env`。
-如果用户名或密码包含 `@`、`:`、`/`、`#`、`%` 等 URL 特殊字符，需对用户名或密码部分进行 URL 百分号编码。
-如正式服务要求 SSL 等连接参数，应沿用正式数据库提供的要求。
-
-仓库根目录的 `.env.prd` 不会被这套部署读取；这里使用的是独立正式目录。配置文件由你手动创建和维护，不放入 wheel 或 Git。
-`THOTH_CONFIG_DIR` 在第 6 步的 MCP 配置中设置，不写进上述两个文件。
-
-保存两个配置文件后，执行这条命令，将它们设为仅当前用户可读写：
-
-```shell
-chmod 600 /Users/ethan/.local/share/thoth/config/.env /Users/ethan/.local/share/thoth/config/.env.prd
-```
-
-## 5. 检查安装位置和配置加载
-
-以下是一条包含多行 Python 脚本的完整终端命令，只检查安装与配置，不连接数据库，不输出连接串。请从 `env` 开始到最后一行 `PY` 为止整块复制并执行，不要逐行拆开执行：
-
-```shell
-env -u THOTH_PG_DSN -u THOTH_OPERATOR -u PYTHONPATH THOTH_ENV=prd THOTH_CONFIG_DIR=/Users/ethan/.local/share/thoth/config /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python -I - <<'PY'
-from importlib.metadata import version
-from pathlib import Path
-import thoth
-from thoth.common.config import get_settings
-
-settings = get_settings()
-print("版本:", version("thoth"))
-print("安装位置:", Path(thoth.__file__).resolve())
-print("环境:", settings.environment)
-print("配置加载成功；目标数据库由 THOTH_PG_DSN 指定")
-PY
-```
-
-预期：版本为 `0.1.0`，安装位置在 `releases/0.1.0/.venv` 中，环境为 `prd`，并显示配置加载成功。该步骤不验证数据库连接，实际目标库在第 1 步确认，在第 7 步验证查询。
-如果安装位置仍在开发源码目录，说明并未使用独立 wheel 安装，先修正再继续。
-
-## 6. 给「日本語」项目添加 MCP 配置
-
-执行这条命令，创建「日本語」项目的 Codex 配置目录：
-
-```shell
-mkdir -p /Users/ethan/Documents/Japanese/.codex
-```
-
-在文本编辑器中打开或新建 `/Users/ethan/Documents/Japanese/.codex/config.toml`，将下面整块配置粘贴到文件中，不在终端执行。
-如果已有其他设置，保留它们；已有同名 `[mcp_servers.thoth]` 时修改原块，不重复添加。
-
-```toml
-[mcp_servers.thoth]
-command = "/Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python"
-args = ["-I", "-m", "thoth.mcp_server"]
-cwd = "/Users/ethan/.local/share/thoth"
-
-[mcp_servers.thoth.env]
-THOTH_CONFIG_DIR = "/Users/ethan/.local/share/thoth/config"
-THOTH_ENV = "prd"
-THOTH_OPERATOR = "THOTH_MCP"
-```
-
-`-I` 使用 Python 隔离模式，避免工作目录和 `PYTHONPATH` 意外引入开发源码。
-此处只记录启动方式，不放数据库密码。不要在 MCP 的 `env` 中再配置 `THOTH_PG_DSN`：进程中的连接串会优先于 `.env.prd`。
-如果此前从终端给 Codex 设置过全局 `THOTH_PG_DSN`，应先取消该环境变量，再重新启动应用。
-
-Codex 官方支持在受信任项目的 `.codex/config.toml` 中配置项目专属 MCP。此文件负责给「日本語」项目增加 thoth；已有全局 MCP 设置仍然可能同时生效。
-若全局设置已经存在同名服务，检查它是否遗留连接串环境变量或其他配置，避免合并后覆盖正式配置。
-参考：[官方 MCP 配置说明](https://developers.openai.com/codex/mcp/)。
-
-## 7. 重新加载并验证只读调用
-
-在 Codex 中打开「日本語」项目，确保该项目处于受信任状态。重新启动应用并在该项目新建聊天，以便载入新增配置。
-MCP 管理页面应能看到 thoth 连接成功。无需手动在终端保持 `python -m thoth.mcp_server` 运行。
-
-先发送：
-
-> 使用 thoth 的 query_users 查询已有用户，只执行查询，不新增或修改数据。
-
-应能返回第 1 步准备的用户名。工具列表出现仅表示 MCP 已启动；这次查询成功才表示生产配置、连接和用户表可以正常使用。
-
-然后发送（用户名按实际情况替换）：
-
-> 使用 thoth 的 query_words，为用户名 ethan 查询最多 5 个单词，只执行查询。
-
-工具参数应为 `{"username":"ethan","query":{"limit":5}}`。空词库返回空数组也正常。
-这一步能进一步验证单词、标签和统计相关查询，不写入生产数据。
-
-## 8. 开始正式使用并记录版本
-
-日常在「日本語」项目聊天中使用查词、保存单词和统计工具。可在该项目现有 `AGENTS.md` 中按需追加下面整块文字；这是文件内容，不在终端执行：
-
-```text
-日语词库使用 thoth MCP。我的词库用户名是 ethan。
-查询词库时调用 query_words；需要确认用户时调用 query_users。
-只有我明确要求保存、修改或统计单词时，才调用相应写入工具。
-```
-
-这段规则中的用户名要与数据库一致。保留 `releases/0.1.0` 目录下的 wheel、依赖锁文件和虚拟环境，便于追溯。
-当前源码继续连接开发库；修改源码不会改变已安装的 wheel，修改正式配置后需重启 MCP 才生效。
-
-## 后续升级与回退
-
-1. 在开发项目完成修改和测试，将 `pyproject.toml` 的版本号提升（例如 `0.1.1`），然后执行下面这一条命令更新锁文件：
-
-   ```shell
-   uv lock
-   ```
-
-2. 按第 2 步重新验证、打包和导出依赖，wheel 文件名随版本变为 `thoth-0.1.1-py3-none-any.whl`。
-3. 按第 3 步安装到新的 `releases/0.1.1`，将命令中的版本号全部替换；保留 `releases/0.1.0`，共用已有正式配置目录。
-4. 用第 5 步检查新版本，将检查命令中的 `0.1.0` 改成 `0.1.1`。
-5. 将日语项目 MCP 配置里的 Python 路径改到新版本，重启并按第 7 步验证。
-6. 如果新版程序有问题，将路径改回旧版并重启。此操作只回退程序，不会撤销数据库写入或数据库结构变更。
-
-升级通常不需要修改正式凭证，也不执行 `rebuild_all.sql`。涉及数据库结构变化时，必须另行准备并验证迁移方案。
-
-## 常见问题
-
-| 现象 | 检查方式 |
-| --- | --- |
-| `THOTH_CONFIG_DIR 必须为现有目录的绝对路径` | 检查目录是否存在，填写完整 `/Users/...` 路径，不写 `~` 或相对路径。 |
-| `缺少环境配置文件 .env.prd` | 检查第 4 步文件的位置及后缀，不要放到开发目录。 |
-| `公共 .env 不允许配置 THOTH_PG_DSN` | 把连接串放到独立配置目录的 `.env.prd`。 |
-| 连接 PostgreSQL 失败 | 检查数据库是否运行、主机端口和账号密码是否正确、账号是否有访问权限。 |
-| 连接到了非预期数据库 | 检查 `.env.prd` 中的实际库名，以及是否有进程级 `THOTH_PG_DSN` 覆盖文件；运行服务不做固定库名校验。 |
-| 查询提示用户不存在 | 用第 1 步 SQL 确认用户名，大小写和中文必须一致。 |
-| Codex 没有出现工具 | 确认处于「日本語」项目、项目受信任、配置没有重复 TOML 表，重启后新建聊天。 |
-| 依赖下载失败 | 检查网络及 uv 的包索引配置，成功完成安装和 `uv pip check` 后再继续。 |
+参考：[FastMCP 官方 HTTP 部署说明](https://github.com/PrefectHQ/fastmcp/blob/main/docs/deployment/http.mdx)、[Codex MCP 配置说明](https://developers.openai.com/codex/mcp/)。

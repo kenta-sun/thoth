@@ -17,6 +17,19 @@ from thoth.service.add_update_words_service import MissingWordFieldsError
 from thoth.entity import WordEntity, TagEntity
 
 
+def test_main_starts_http_with_local_host_protection(monkeypatch):
+    """入口使用 HTTP 及本机 Host/Origin 保护，不启动 stdio 服务。"""
+    run = Mock()
+    monkeypatch.setattr(mcp_server.mcp, "run", run)
+    mcp_server.main()
+    run.assert_called_once_with(
+        transport="http", path="/mcp", show_banner=False, log_level="INFO",
+        host_origin_protection=True,
+        allowed_hosts=["localhost", "127.0.0.1"],
+        allowed_origins=["http://localhost:*", "http://127.0.0.1:*"],
+    )
+
+
 @pytest.fixture
 def backend(monkeypatch):
     """替换配置、连接和 Mapper，保留真实 Service 流程以验证 MCP 协议结果。"""

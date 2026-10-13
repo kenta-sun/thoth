@@ -14,7 +14,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-# 源码开发默认目录；安装包通过 THOTH_CONFIG_DIR 使用独立配置目录。
+# 源码开发默认目录；容器通过 THOTH_CONFIG_DIR 读取挂载的配置。
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SUPPORTED_ENVIRONMENTS = frozenset({"dev", "test", "prd"})
 
@@ -26,7 +26,6 @@ class Settings:
     pg_dsn: str = field(repr=False)  # 当前环境的 PostgreSQL 连接串，可能含密码。
     operator: str = "THOTH_MCP"  # 写入 created_by、updated_by 的操作者标识。
     environment: str = "dev"  # 运行环境，仅允许 dev、test、prd。
-
 
 
 def load_settings(environment: str | None = None, *, root: Path | None = None) -> Settings:

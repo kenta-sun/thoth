@@ -1,4 +1,4 @@
-"""MCP 启动模块：加载统一注册的工具，并以 stdio 运行服务。
+"""MCP 启动模块：加载统一注册的工具，并以 Streamable HTTP 运行服务。
 
 导入时只完成工具注册；配置读取和数据库连接在实际工具调用时进行。
 """
@@ -11,6 +11,19 @@ mcp = FastMCP(name="thoth-words", strict_input_validation=True)
 register_tools(mcp)
 
 
+def main() -> None:
+    """启动 /mcp HTTP 端点；监听地址与端口由 FASTMCP_HOST、FASTMCP_PORT 控制。
+
+    本地默认监听 127.0.0.1:8000，Docker 在容器内监听 0.0.0.0。
+    启用 Host/Origin 检查，只接受本机客户端；数据库在工具实际调用时连接。
+    """
+    mcp.run(
+        transport="http", path="/mcp", show_banner=False, log_level="INFO",
+        host_origin_protection=True,
+        allowed_hosts=["localhost", "127.0.0.1"],
+        allowed_origins=["http://localhost:*", "http://127.0.0.1:*"],
+    )
+
+
 if __name__ == "__main__":
-    # stdio 的标准输出用于协议通信，关闭启动横幅以免混入工具消息。
-    mcp.run(transport="stdio", show_banner=False, log_level="ERROR")
+    main()

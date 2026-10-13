@@ -5,10 +5,8 @@ requires-python = ">=3.11"
 dependencies = [
     "fastmcp==3.4.4",
     "pydantic>=2.11,<3",
-    "openai>=3.3.1",
     "python-dotenv>=1.2.2",
     "psycopg[binary]>=3.2",
-    "pgvector>=0.4",
 ]
 
 [dependency-groups]
@@ -25,10 +23,6 @@ build-backend = "hatchling.build"
 # 否则 hatchling 会按项目名去根目录找 thoth/ 而找不到包。
 [tool.hatch.build.targets.wheel]
 packages = ["src/thoth"]
-
-# 源码发布包只包含程序及构建元数据，不携带任何运行环境文件。
-[tool.hatch.build.targets.sdist]
-include = ["/src/thoth", "/pyproject.toml", "/README.md", "/LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

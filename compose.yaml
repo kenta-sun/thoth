@@ -1,0 +1,23 @@
+name: thoth
+services:
+  thoth:
+    image: thoth:local
+    build: .
+    restart: unless-stopped
+    # 本机工具没有配置认证，仅发布到宿主机回环地址。
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      THOTH_ENV: prd
+      THOTH_OPERATOR: THOTH_MCP
+    volumes:
+      # 不加载开发配置；缺少真实文件时直接报错，不自动创建目录。
+      - type: bind
+        source: ./.env.prd
+        target: /config/.env.prd
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp
