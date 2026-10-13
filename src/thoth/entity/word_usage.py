@@ -13,7 +13,8 @@ from datetime import datetime
 class WordUsageEntity:
     """word_usage_tbl 的使用统计记录，按单词汇总出题或写文章时的累计使用次数。"""
 
-    word_id: int | None = None  # 关联 word_tbl.id 的主键，每个单词最多一条使用统计。
+    user_id: int | None = None  # 关联 user_tbl.id，与 word_id 构成联合主键。
+    word_id: int | None = None  # 关联 word_tbl.id 的联合主键字段，每个用户对每个单词最多一条使用统计。
     usage_count: int | None = None  # 出题或写文章时使用该词的累计次数；表默认 0，并限制非负。
     created_at: datetime | None = None  # 带时区的创建时间；表默认值为数据库当前时间。
     updated_at: datetime | None = None  # 带时区的最后更新时间；插入默认当前时间，更新需由 SQL 维护。

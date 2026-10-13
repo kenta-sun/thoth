@@ -107,7 +107,7 @@ def test_invalid_requests_fail_before_config(monkeypatch, raw):
     settings = Mock(side_effect=AssertionError("must not read config"))
     monkeypatch.setattr(service, "get_settings", settings)
     with pytest.raises(ToolError):
-        service.query_words(json.dumps(raw))
+        service.query_words(json.dumps(raw), username="tester")
     settings.assert_not_called()
 
 
@@ -142,6 +142,7 @@ def test_projection_maps_table_entities_and_serializes_only_selected_fields():
 
 
 def test_protocol_schema_response_and_errors(monkeypatch):
+    monkeypatch.setattr(service, "require_user", Mock(return_value=SimpleNamespace(id=1)))
     mapper = Mock(query_words=Mock(return_value=[]))
     monkeypatch.setattr(service, "get_settings", lambda: object())
     monkeypatch.setattr(service, "WordTblMapper", Mock(return_value=mapper))
@@ -157,13 +158,13 @@ def test_protocol_schema_response_and_errors(monkeypatch):
         """走真实 MCP 内存传输，校验字符串入参及错误转换。"""
         async with Client(mcp) as client:
             tool = next(tool for tool in await client.list_tools() if tool.name == "query_words")
-            assert tool.inputSchema["required"] == ["text"]
+            assert tool.inputSchema["required"] == ["text", "username"]
             assert tool.inputSchema["properties"]["text"]["type"] == "string"
-            assert (await client.call_tool_mcp("query_words", {"text": {}})).isError
-            result = await client.call_tool_mcp("query_words", {"text": "{}"})
+            assert (await client.call_tool_mcp("query_words", {"username": "tester", "text": {}})).isError
+            result = await client.call_tool_mcp("query_words", {"username": "tester", "text": "{}"})
             assert not result.isError and result.structuredContent == {"results": []}
             mapper.query_words.side_effect = psycopg.errors.UndefinedTable("private SQL or credentials")
-            result = await client.call_tool_mcp("query_words", {"text": "{}"})
+            result = await client.call_tool_mcp("query_words", {"username": "tester", "text": "{}"})
             assert result.isError and "private SQL" not in str(result)
     asyncio.run(run())
 

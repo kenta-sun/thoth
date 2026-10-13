@@ -1,6 +1,6 @@
 # Thoth
 
-基于 Python、FastMCP 和 PostgreSQL 的日语单词 MCP 服务。提供 `add_update_words(text: str)`、`count_word_usage(text: str)`、`count_word_miss(text: str)`、`reset_word_miss(text: str)` 和 `query_words(text: str)`，由 AI 整理单词信息及标签，再通过固定业务接口写入已有的 `word_tbl` 和 `word_tag_tbl`。
+基于 Python、FastMCP 和 PostgreSQL 的日语单词 MCP 服务。提供 `add_update_words(text: str, username: str)`、`count_word_usage(text: str, username: str)`、`count_word_miss(text: str, username: str)`、`reset_word_miss(text: str, username: str)` 和 `query_words(text: str, username: str)`，另提供只读 `query_users()`。由 AI 整理单词信息及标签，再通过固定业务接口写入已有的 `word_tbl` 和 `word_tag_tbl`。
 
 服务不调用大模型、不生成向量，也不向 AI 提供任意 SQL 或表结构修改接口。项目原有依赖暂时保留。
 
@@ -48,9 +48,62 @@ MCP 客户端也可在服务启动配置的 `env` 中设置 `THOTH_ENV`。Docker
 
 MCP 客户端应使用虚拟环境中 Python 的绝对路径，启动参数为 `-m thoth.mcp_server`。相关命令见 [doc/commands.md](doc/commands.md)。
 
+## 用户与统计归属
+
+全部五个原有工具均要求独立的 `username: str` 参数，与 `text` 并列；`text` 仍是 JSON 字符串。
+旧调用必须补充用户名。用户名按原文区分大小写，允许中文，长度为 1～128 字符，不能含首尾空白。
+用户名必须由使用者手动通过 SQL 添加；非法或不存在时返回工具错误，不自动创建或选取默认用户。
+空单词列表或全部元素被过滤时，也会连接数据库校验用户；无效 JSON 仍在连接前拒绝。
+
+`query_users()` 无参数，按用户 ID 升序返回 `{"results":[{"username":"ethan"}]}`；无用户返回空数组。
+这个工具只读，不返回用户 ID 或审计信息。MCP 不提供用户新增、修改、删除或单词删除、恢复工具。
+本地用户名仅用于数据分组，不是登录认证；调用方能够指定任何已有用户名。
+
+单词、释义、读音和标签全员共享；保存工具校验用户后修改共享词库。
+两张统计表以 `(user_id, word_id)` 为联合主键；计数、清零、统计筛选和排序只针对指定用户。
+当前用户没有统计记录时按零处理，仍能查询共享词库，查询不会初始化统计。
+`THOTH_OPERATOR` 继续用于审计字段，不代替统计归属用户。
+
+调用示例（用户名需要预先通过 SQL 添加）：
+
+```json
+{"username":"ethan","text":"[\"食べる\"]"}
+```
+
+查询指定用户的高陌生次数单词：
+
+```json
+{"username":"ethan","text":"{\"sort\":[[\"miss_count\",\"desc\"]],\"limit\":10}"}
+```
+
+## 数据库完整重建与手动添加用户
+
+**[sql/rebuild_all.sql](sql/rebuild_all.sql) 会清空全部七张项目表的数据，重复执行也会再次清空。**
+脚本在一个事务中按依赖顺序删除并重建用户、单词、状态、标签、标签关联和两张统计表，再初始化状态和标签字典。
+不迁移旧数据，不删除数据库或 schema，不使用 DROP CASCADE；外部依赖导致失败时整体回滚。
+用户表初始为空，单词和统计也为空。
+
+执行顺序：停止 MCP → 在 SQL 客户端确认目标数据库 → 完整执行重建脚本 → 手动添加用户 → 启动新版 MCP。
+生产环境由使用者自行执行；脚本不包含连接信息。请整份执行，不选择部分语句运行，客户端报错应停止并回滚。
+建表顺序为 `user_tbl`、`word_sts_tbl`、`tag_tbl`、`word_tbl`、`word_tag_tbl`、`word_usage_tbl`、`word_miss_tbl`。
+
+手动添加用户可参考 [sql/manual/add_user.sql](sql/manual/add_user.sql)，替换示例用户名后单独执行：
+
+```sql
+INSERT INTO user_tbl (username) VALUES ('ethan')
+ON CONFLICT (username) DO NOTHING;
+```
+
+合并脚本由分表 DDL 和字典 DML 生成；修改源 SQL 后同步生成，命令不会连接数据库：
+
+```shell
+.venv/bin/python -m thoth.utils.generate_rebuild_sql
+.venv/bin/python -m thoth.utils.generate_rebuild_sql --check
+```
+
 ## add_update_words
 
-唯一参数 `text` 为非空 JSON 数组字符串，每个元素代表一个单词。下面展示字符串解析后的结构：
+参数 `text` 为非空 JSON 数组字符串，每个元素代表一个单词。下面展示字符串解析后的结构：
 
 ```json
 [
@@ -79,6 +132,7 @@ MCP 客户端应使用虚拟环境中 Python 的绝对路径，启动参数为 `
 
 ```json
 {
+  "username": "ethan",
   "text": "[{\"word\":\"食べる\",\"common_form\":\"食べる\",\"hiragana\":\"たべる\",\"meaning\":\"吃\",\"tags\":[\"v\",\"v2\"]}]"
 }
 ```
@@ -87,17 +141,18 @@ MCP 客户端应使用虚拟环境中 Python 的绝对路径，启动参数为 `
 
 ```json
 {
+  "username": "ethan",
   "text": "[{\"word\":\"食べる\",\"meaning\":\"吃；食用\",\"tags\":[\"v\",\"v2\"],\"operation\":{\"action\":\"update\"}}]"
 }
 ```
 
 ## 单词统计
 
-`count_word_usage(text: str)` 为使用次数加一，`count_word_miss(text: str)` 为错误次数加一。
+`count_word_usage(text: str, username: str)` 为使用次数加一，`count_word_miss(text: str, username: str)` 为错误次数加一。
 两者均接受单词字符串数组的 JSON 字符串，实际 MCP 参数示例：
 
 ```json
-{"text":"[\"食べる\",\"飲む\"]"}
+{"username":"ethan","text":"[\"食べる\",\"飲む\"]"}
 ```
 
 空数组正常返回空 `results`。null、空字符串、纯空白、非字符串及非法数据库文本
@@ -105,7 +160,7 @@ MCP 客户端应使用虚拟环境中 Python 的绝对路径，启动参数为 `
 有效词按原文精确匹配，不去首尾空格。不存在或已删除的单词均跳过。
 不接受逗号分隔格式、word 对象或 fields 参数；对象元素作为非字符串跳过。
 
-每批通常三条 SQL：查询单词主表、批量插入缺失的零值统计行、批量将计数加一。
+每批先查询用户，再通常执行三条统计 SQL：查询单词主表、批量插入缺失的零值统计行、批量将计数加一。
 只操作工具对应的统计表；写入时再次限定主表存在且未删除。
 使用 autocommit，不设置跨语句或逐词事务。初始化成功而加一失败时，零值行保留。
 批量写入失败则待计数项全部 failed，已过滤项仍 skipped；不自动降级逐项重试。
@@ -117,15 +172,15 @@ updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipp
 的记录返回 skipped。每次成功调用均独立加一，没有请求幂等或自动重试保证。
 配置、连接、初始查询失败，以及非法 JSON、非数组顶层、非标准数值等返回工具错误。
 
-`reset_word_miss(text: str)` 使用相同的单词字符串数组输入：
+`reset_word_miss(text: str, username: str)` 使用相同的单词字符串数组输入：
 
 ```json
-{"text":"[\"食べる\"]"}
+{"username":"ethan","text":"[\"食べる\"]"}
 ```
 
 清零仅操作已有错误计数，每词独立事务；没有记录或已经为零时跳过，不创建记录，
 不修改零值行审计信息，不影响使用次数。预处理与两个计数工具一致：无效元素跳过，
-重复词仅首次处理，后续项注明首次下标；空数组或全部过滤时不读取配置、不连接数据库。
+重复词仅首次处理，后续项注明首次下标；空数组或全部过滤时仍连接数据库校验用户，但不执行单词查询和统计写入。
 成功或已有零值时返回 `counts: {"miss_count": 0}`；无统计记录时省略 counts。
 
 各工具使用同名专属 Service 和 description，共享 `parse_word_list_text` 及结果转换能力。
@@ -138,7 +193,7 @@ original_items 为包含 index、original_value 的 `WordListItem` 列表，pend
 
 ## query_words
 
-唯一参数 `text` 是 JSON 对象字符串，可组合 `where`、`fields`、`sort`、`limit`。
+参数 `text` 是 JSON 对象字符串，可组合 `where`、`fields`、`sort`、`limit`。
 以下展示解析后的对象，实际调用时需序列化为字符串传入 `text`。
 
 | 参数 | 用途 | 省略时 |
@@ -186,7 +241,7 @@ original_items 为包含 index、original_value 的 `WordListItem` 列表，pend
 例如 JSON `{"where":{"common_form":{"like":"%\\%"}}}` 匹配以字面 `%` 结尾的常用写法。
 `in` 与 `like` 可以同时出现在 `common_form` 条件中，两者必须同时满足。
 
-固定排除 `status_code = 'D'` 的单词，不接受状态条件覆盖。按需关联统计表，
+固定排除 `status_code = 'D'` 的单词，不接受状态条件覆盖。按需关联指定用户的统计表记录，
 无统计记录统一按 0 筛选、排序和返回，查询不会初始化或更新统计记录。
 标签筛选使用 EXISTS，标签返回为按编码排序的数组，一词多标签不会重复或占用多条 limit。
 
@@ -218,7 +273,7 @@ original_items 为包含 index、original_value 的 `WordListItem` 列表，pend
 
 JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完整标签列表 `tags` 通过 DTO 传递。保存时先校验整批输入，再用一次查询取得已有的单词实体，随后按原顺序逐项校验标签、新增、修改或跳过。新增和修改通过 `RETURNING` 直接取得数据库保存后的实体，不增加逐词查询；新增时仍由唯一约束处理并发冲突，默认 `create` 不会覆盖已有信息。Service 管理每项事务，先更新单词取得行锁，再删除和重建标签关联，提交前发生任何错误均整项回滚。
 
-六张表均有对应的 entity，字段名称和基础类型对应表结构。entity 只是数据容器，所有字段均允许为 `None`、默认值为 `None`，支持空对象和局部赋值，不包含非空或业务校验。JSON 输入校验和新增必填检查保留在实体之外，数据库继续负责表约束及 ID、状态和时间戳等默认值。业务层通过对象传递记录和结果，仅在 JSON 输入输出及 SQL 参数绑定边界使用字典。
+七张表均有对应的 entity，字段名称和基础类型对应表结构。entity 只是数据容器，所有字段均允许为 `None`、默认值为 `None`，支持空对象和局部赋值，不包含非空或业务校验。JSON 输入校验和新增必填检查保留在实体之外，数据库继续负责表约束及 ID、状态和时间戳等默认值。业务层通过对象传递记录和结果，仅在 JSON 输入输出及 SQL 参数绑定边界使用字典。
 
 - `mcp_server.py`：启动 stdio MCP 服务，加载工具注册；启动命令保持不变。
 - `tools/mcp_tools.py`：统一注册所有 MCP 工具，入口仅调用对应 Service。
@@ -228,7 +283,7 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 - `dao/word_tbl_mapper.py`：`WordTblMapper` 封装单词查询、新增和更新 SQL 及实体行映射。
 - `dao/tag_tbl_mapper.py`：`TagTblMapper` 按编码查询已有标签，返回 `TagEntity`。
 - `dao/word_tag_tbl_mapper.py`：`WordTagTblMapper` 按单词 ID 删除关联、批量插入 `WordTagEntity`。所有 Mapper 均不管理事务或决定业务分支。
-- `entity/`：六张表各自的实体定义，不承担校验。
+- `entity/`：七张表各自的实体定义，不承担校验。
 - `dto/word.py`：单词输入、逐项结果、批次结果和 DAO 保存结果。
 - `service/query_words_service.py`：解析、校验、执行及序列化查询；查询记录通过各表实体与结果 DTO 传递。
 - `utils/sql_query_builder.py`：独立构建 SQL 模板和参数，不连接数据库；Mapper 提供字段白名单、关联及固定条件。
@@ -257,13 +312,13 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 .venv/bin/python -m thoth.mcp_server
 ```
 
-服务通过 stdio 提供 `add_update_words`、`count_word_usage`、`count_word_miss`、`reset_word_miss` 和 `query_words`，参数均为 `text: str`。配置 MCP 客户端时，将命令设为项目 `.venv/bin/python` 的绝对路径，参数设为：
+服务通过 stdio 提供 `add_update_words`、`count_word_usage`、`count_word_miss`、`reset_word_miss` 和 `query_words`，五个工具参数均为 `text: str, username: str`，另提供无参数的 `query_users()`。配置 MCP 客户端时，将命令设为项目 `.venv/bin/python` 的绝对路径，参数设为：
 
 ```json
 ["-m", "thoth.mcp_server"]
 ```
 
-数据库中应已存在 `word_tbl`、`word_sts_tbl`、`tag_tbl`、`word_tag_tbl`，标签字典需事先维护；启动服务不会执行建表、扩展安装或账号权限变更。
+数据库中应已存在用户表、单词表、状态表、标签表、关联表和两张统计表；用户和标签字典需事先维护；启动服务不会执行建表、扩展安装或账号权限变更。
 
 ## 执行测试
 

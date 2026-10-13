@@ -13,28 +13,28 @@ class WordUsageTblMapper:
         """复用 Service 提供的连接，不管理跨语句事务。"""
         self._connection = connection
 
-    def initialize_many(self, entities: list[WordUsageEntity], *, operator: str) -> None:
-        """按实体关联 ID 批量插入零值；已有记录不变，空列表不执行 SQL。
+    def initialize_many(self, entities: list[WordUsageEntity], *, user_id: int, operator: str) -> None:
+        """按用户及实体关联 ID 批量插入零值；已有记录不变，空列表不执行 SQL。
 
-        operator 填充新增审计字段；重新检查主表状态，驱动错误向上传递。
+        user_id 限定本次统计归属；operator 填充新增审计字段；重新检查主表状态，驱动错误向上传递。
         """
         if not entities:
             return
         # 有效主表记录才允许初始化；冲突时保留原计数和全部审计信息。
         sql = """
-        INSERT INTO word_usage_tbl (word_id, usage_count, created_by, updated_by)
-        SELECT id, 0, %(operator)s, %(operator)s FROM word_tbl
+        INSERT INTO word_usage_tbl (user_id, word_id, usage_count, created_by, updated_by)
+        SELECT %(user_id)s, id, 0, %(operator)s, %(operator)s FROM word_tbl
         WHERE id = ANY(%(ids)s) AND status_code <> 'D'
         ORDER BY id
-        ON CONFLICT (word_id) DO NOTHING
+        ON CONFLICT (user_id, word_id) DO NOTHING
         """
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, {"ids": [entity.word_id for entity in entities], "operator": operator})
+            cursor.execute(sql, {"user_id": user_id, "ids": [entity.word_id for entity in entities], "operator": operator})
 
-    def increment_many(self, entities: list[WordUsageEntity], *, operator: str) -> list[WordUsageEntity]:
-        """按实体关联 ID 一次加一并返回实际更新实体；空列表返回空列表。
+    def increment_many(self, entities: list[WordUsageEntity], *, user_id: int, operator: str) -> list[WordUsageEntity]:
+        """按用户及实体关联 ID 一次加一并返回实际更新实体；空列表返回空列表。
 
-        只更新仍存在且未删除的单词；SQL 失败时整条语句回滚，初始化不会撤销。
+        user_id 限定统计归属；只更新仍存在且未删除的单词；SQL 失败时整条语句回滚，初始化不会撤销。
         """
         if not entities:
             return []
@@ -43,12 +43,12 @@ class WordUsageTblMapper:
         UPDATE word_usage_tbl
         SET usage_count = usage_count + 1,
             updated_at = CURRENT_TIMESTAMP, updated_by = %(operator)s
-        WHERE word_id = ANY(%(ids)s)
+        WHERE user_id = %(user_id)s AND word_id = ANY(%(ids)s)
           AND EXISTS (SELECT 1 FROM word_tbl
                       WHERE id = word_usage_tbl.word_id AND status_code <> 'D')
-        RETURNING word_id, usage_count
+        RETURNING user_id, word_id, usage_count
         """
         with self._connection.cursor(row_factory=class_row(WordUsageEntity)) as cursor:
-            cursor.execute(sql, {"ids": [entity.word_id for entity in entities], "operator": operator})
+            cursor.execute(sql, {"user_id": user_id, "ids": [entity.word_id for entity in entities], "operator": operator})
             return cursor.fetchall()
 

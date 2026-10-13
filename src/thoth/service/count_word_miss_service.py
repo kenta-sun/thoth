@@ -5,6 +5,7 @@ from typing import Any
 import psycopg
 from fastmcp.exceptions import ToolError
 
+from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
 from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.dao.word_miss_tbl_mapper import WordMissTblMapper
@@ -14,10 +15,11 @@ from thoth.entity import WordMissEntity
 from thoth.service.word_stats_input_service import parse_word_list_text, merge_stats_results, serialize_stats, stats_database_error
 
 
-def count_word_miss(text: str) -> dict[str, list[dict[str, Any]]]:
+def count_word_miss(text: str, username: str) -> dict[str, list[dict[str, Any]]]:
     """批量为 miss_count 加一，不开启跨语句事务，也不自动重试。
 
     Args:
+        username: 已手动创建的用户名，精确匹配，不存在时返回工具错误。
         text: 单词 JSON 字符串数组，空数组允许；无效和重复元素跳过。
 
     Returns:
@@ -28,14 +30,16 @@ def count_word_miss(text: str) -> dict[str, list[dict[str, Any]]]:
         ToolError: 整批格式、配置、连接或初始查询失败。
     """
     try:
+        validate_username(username)
         preprocessed = parse_word_list_text(text)
         if preprocessed.status == "stop":
             raise ToolError(preprocessed.message)
         items = preprocessed.pending_items
-        if not items:
-            return serialize_stats(merge_stats_results(preprocessed, []))
         settings = get_settings()
         with open_connection(settings) as connection:
+            user = require_user(connection, username)
+            if not items:
+                return serialize_stats(merge_stats_results(preprocessed, []))
             # 一次查询定位全部有效词；不锁主表，写入时再次限定主表存在且未删除。
             words = [item.original_value for item in items]
             try:
@@ -50,11 +54,11 @@ def count_word_miss(text: str) -> dict[str, list[dict[str, Any]]]:
                        for item in items}
             if pending:
                 mapper = WordMissTblMapper(connection)
-                entities = [WordMissEntity(word_id=record.id) for record in pending.values()]
+                entities = [WordMissEntity(user_id=user.id, word_id=record.id) for record in pending.values()]
                 try:
                     # 两条独立提交的批量写入；只有最终 RETURNING 中的记录算成功。
-                    mapper.initialize_many(entities, operator=settings.operator)
-                    updated = mapper.increment_many(entities, operator=settings.operator)
+                    mapper.initialize_many(entities, user_id=user.id, operator=settings.operator)
+                    updated = mapper.increment_many(entities, user_id=user.id, operator=settings.operator)
                     if any(record.miss_count is None for record in updated):
                         raise DatabaseError("批量计数未返回有效数值。")
                     by_id = {record.word_id: record for record in updated}

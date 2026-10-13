@@ -2,9 +2,13 @@
 
 from thoth.common.tags import TAG_OPTIONS_DESCRIPTION
 
-ADD_UPDATE_WORDS_DESCRIPTION = """批量新增或修改日语单词，以 word 为唯一判重和更新定位依据。
+ADD_UPDATE_WORDS_DESCRIPTION = """必填参数 username 为独立字符串，与 text 并列传入，不放在 text 内。
+用户名须已存在，为 1～128 字符且无首尾空白，区分大小写，不自动创建或选择用户。
+可先通过 query_users 查询已有用户名；不存在或非法用户名返回工具错误。
+单词资料和标签由所有用户共享；username 用于校验调用指定的用户，不能据此建立私人词库。
+批量新增或修改日语单词，以 word 为唯一判重和更新定位依据。
 
-唯一参数 text 是 JSON 数组字符串，每个元素代表一个单词。以下展示解析后的结构，
+参数 text 是 JSON 数组字符串，每个元素代表一个单词。以下展示解析后的结构，
 中文值为字段说明；实际调用时应填写真实信息，并将整个数组序列化为字符串传入 text。
 text 不得包含 Markdown 标记或额外说明。
 

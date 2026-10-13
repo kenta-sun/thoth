@@ -27,8 +27,8 @@ WORD_QUERY_SPEC = QuerySqlSpec(
         "miss_count": SqlField("COALESCE(m.miss_count, 0)", QUERY_OPERATORS["miss_count"], joins=("miss",)),
     }),
     joins=MappingProxyType({
-        "usage": "LEFT JOIN word_usage_tbl AS u ON u.word_id = w.id",
-        "miss": "LEFT JOIN word_miss_tbl AS m ON m.word_id = w.id",
+        "usage": "LEFT JOIN word_usage_tbl AS u ON u.word_id = w.id AND u.user_id = %(user_id)s",
+        "miss": "LEFT JOIN word_miss_tbl AS m ON m.word_id = w.id AND m.user_id = %(user_id)s",
     }),
 )
 
@@ -62,12 +62,14 @@ class WordTblMapper:
         self._connection = connection
         self._operator = operator
 
-    def query_words(self, request: QueryRequest) -> list[QueryWordResult]:
+    def query_words(self, request: QueryRequest, *, user_id: int) -> list[QueryWordResult]:
         """执行构建器生成的只读查询；不加行锁、不提交事务，空结果返回空列表。
 
+        user_id 由 Service 查找已存在的用户取得，限定两张统计表的关联范围。
         request 已由 Service 校验；构建器再次约束字段及操作，参数交给驱动绑定。
         """
         query = build_query(request, WORD_QUERY_SPEC)
+        query.params["user_id"] = user_id
         with self._connection.cursor(row_factory=_query_row_factory) as cursor:
             cursor.execute(query.sql, query.params)
             return cursor.fetchall()

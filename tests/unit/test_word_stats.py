@@ -1,4 +1,4 @@
-"""验证批量计数的过滤、三条 SQL、失败边界及原清零协议。"""
+"""验证批量计数的过滤、用户查询及三条统计 SQL、失败边界及原清零协议。"""
 
 import asyncio
 import json
@@ -24,12 +24,12 @@ CASES = [(usage_service, "count_word_usage", "usage"), (miss_service, "count_wor
 
 def stat_row(value=1, word_id=7):
     """提供经过驱动类型适配的统计记录。"""
-    return (word_id, value)
+    return (1, word_id, value)
 
 
 def install_backend(monkeypatch, service, *responses):
     """保留真实 DAO 和实体映射，只替换配置及数据库连接。"""
-    connection = ScriptedConnection(*responses)
+    connection = ScriptedConnection((1, "tester"), *responses)
 
     @contextmanager
     def connect(settings):
@@ -41,19 +41,21 @@ def install_backend(monkeypatch, service, *responses):
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
-def test_batch_of_100_uses_three_queries_and_no_explicit_transaction(monkeypatch, service, name, kind):
+def test_batch_of_100_uses_four_queries_and_no_explicit_transaction(monkeypatch, service, name, kind):
     words = [f"word{i}" for i in range(100)]
     conn = install_backend(monkeypatch, service,
         [database_row(word, record_id=i+1) for i, word in enumerate(words)], None,
         [stat_row(i+1, i+1) for i in reversed(range(100))])
-    rows = getattr(service, name)(json.dumps(words))["results"]
-    assert len(conn.statements) == 3
+    rows = getattr(service, name)(json.dumps(words), username="tester")["results"]
+    assert len(conn.statements) == 4
     assert conn.commits == conn.rollbacks == 0
     assert [row["word"] for row in rows] == words
     assert [row["counts"] for row in rows] == [{f"{kind}_count": i+1} for i in range(100)]
-    lookup, initialize, update = [query for query, _ in conn.statements]
+    user_lookup, lookup, initialize, update = [query for query, _ in conn.statements]
+    assert "user_tbl" in user_lookup
+    assert all(params["user_id"] == 1 for _, params in conn.statements[2:])
     assert "FOR UPDATE" not in lookup
-    assert "SELECT id, 0," in initialize and "ON CONFLICT (word_id) DO NOTHING" in initialize
+    assert "SELECT %(user_id)s, id, 0," in initialize and "ON CONFLICT (user_id, word_id) DO NOTHING" in initialize
     assert "status_code <> 'D'" in initialize and "ORDER BY id" in initialize
     assert f"SET {kind}_count = {kind}_count + 1" in update
     assert "status_code <> 'D'" in update and "RETURNING" in update
@@ -68,7 +70,7 @@ def test_filtered_items_duplicates_missing_deleted_and_changed(monkeypatch, serv
         [database_row("a"), database_row("deleted", status_code="D"), database_row("changed", record_id=8)],
         None, [stat_row(1)])
     values = ["a", None, "", "  ", 123, {}, "a", "missing", "deleted", "changed", "\ud800", "a\x00"]
-    rows = getattr(service, name)(json.dumps(values))["results"]
+    rows = getattr(service, name)(json.dumps(values), username="tester")["results"]
     assert [row["index"] for row in rows] == list(range(len(values)))
     assert rows[0]["counts"] == {f"{kind}_count": 1}
     assert all(row["status"] == "skipped" and row["reason"] for row in rows[1:])
@@ -76,27 +78,27 @@ def test_filtered_items_duplicates_missing_deleted_and_changed(monkeypatch, serv
     assert rows[7]["reason"] == rows[8]["reason"] == "单词不存在。"
     assert "发生变化" in rows[9]["reason"]
     assert rows[10]["word"] is None
-    assert conn.statements[0][1] == {"words": ["a", "missing", "deleted", "changed"]}
-    assert conn.statements[1][1]["ids"] == [7, 8]
+    assert conn.statements[1][1] == {"words": ["a", "missing", "deleted", "changed"]}
+    assert conn.statements[2][1]["ids"] == [7, 8]
     json.dumps(rows, ensure_ascii=False).encode("utf-8")
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
 @pytest.mark.parametrize("values", [[], [None, "", " ", 1, {}, "\ud800", "\x00"]])
-def test_all_filtered_skips_configuration_and_database(monkeypatch, service, name, kind, values):
-    settings = Mock(side_effect=AssertionError("must not load config"))
-    monkeypatch.setattr(service, "get_settings", settings)
-    rows = getattr(service, name)(json.dumps(values))["results"]
+def test_all_filtered_only_checks_user(monkeypatch, service, name, kind, values):
+    conn = install_backend(monkeypatch, service)
+    rows = getattr(service, name)(json.dumps(values), username="tester")["results"]
     assert len(rows) == len(values)
     assert all(row["status"] == "skipped" for row in rows)
-    settings.assert_not_called()
+    assert len(conn.statements) == 1
+    assert "user_tbl" in conn.statements[0][0]
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
 def test_missing_only_does_not_write(monkeypatch, service, name, kind):
     conn = install_backend(monkeypatch, service, [])
-    assert getattr(service, name)('["missing"]')["results"][0]["status"] == "skipped"
-    assert len(conn.statements) == 1
+    assert getattr(service, name)('["missing"]', username="tester")["results"][0]["status"] == "skipped"
+    assert len(conn.statements) == 2
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
@@ -107,11 +109,11 @@ def test_batch_write_failure_fails_pending_only_without_retry(monkeypatch, servi
         responses.append(None)
     responses.append(psycopg.errors.NumericValueOutOfRange("private SQL"))
     conn = install_backend(monkeypatch, service, *responses)
-    rows = getattr(service, name)('["a",null,"b","a","missing"]')["results"]
+    rows = getattr(service, name)('["a",null,"b","a","missing"]', username="tester")["results"]
     assert [row["status"] for row in rows] == ["failed", "skipped", "failed", "skipped", "skipped"]
     assert all("counts" not in row for row in rows)
     assert "22003" in rows[0]["reason"] and "private" not in rows[0]["reason"]
-    assert len(conn.statements) == (3 if stage == "update" else 2)
+    assert len(conn.statements) == (4 if stage == "update" else 3)
     assert conn.rollbacks == conn.commits == 0
 
 
@@ -119,8 +121,8 @@ def test_batch_write_failure_fails_pending_only_without_retry(monkeypatch, servi
 def test_initial_lookup_error_is_tool_error(monkeypatch, service, name, kind):
     conn = install_backend(monkeypatch, service, psycopg.OperationalError("private"))
     with pytest.raises(ToolError, match="统计操作失败") as exc:
-        getattr(service, name)('["a"]')
-    assert "private" not in str(exc.value) and len(conn.statements) == 1
+        getattr(service, name)('["a"]', username="tester")
+    assert "private" not in str(exc.value) and len(conn.statements) == 2
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
@@ -129,7 +131,7 @@ def test_invalid_batch_does_not_load_config(monkeypatch, service, name, kind, te
     settings = Mock(side_effect=AssertionError("no config"))
     monkeypatch.setattr(service, "get_settings", settings)
     with pytest.raises(ToolError):
-        getattr(service, name)(text)
+        getattr(service, name)(text, username="tester")
     settings.assert_not_called()
 
 
@@ -137,8 +139,8 @@ def test_invalid_batch_does_not_load_config(monkeypatch, service, name, kind, te
 def test_exact_word_bound_as_parameter(monkeypatch, service, name, kind):
     word = " a'; -- "
     conn = install_backend(monkeypatch, service, [database_row(word)], None, [stat_row()])
-    assert getattr(service, name)(json.dumps([word]))["results"][0]["word"] == word
-    assert conn.statements[0][1] == {"words": [word]}
+    assert getattr(service, name)(json.dumps([word]), username="tester")["results"][0]["word"] == word
+    assert conn.statements[1][1] == {"words": [word]}
     assert all(word not in query for query, _ in conn.statements)
 
 
@@ -149,11 +151,11 @@ def test_protocol_strict_string_and_structured_result(monkeypatch, service, name
     async def run():
         async with Client(mcp) as client:
             tools = await client.list_tools()
-            assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss", "query_words"}
+            assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss", "query_words", "query_users"}
             tool = next(tool for tool in tools if tool.name == name)
             assert tool.inputSchema["properties"]["text"]["type"] == "string"
-            assert (await client.call_tool_mcp(name, {"text": ["a"]})).isError
-            response = await client.call_tool_mcp(name, {"text": '["a"]'})
+            assert (await client.call_tool_mcp(name, {"username": "tester", "text": ["a"]})).isError
+            response = await client.call_tool_mcp(name, {"username": "tester", "text": '["a"]'})
             assert not response.isError
             assert response.structuredContent["results"][0]["counts"] == {f"{kind}_count": 1}
     asyncio.run(run())
@@ -165,10 +167,10 @@ def test_reset_missing_zero_and_nonzero(monkeypatch, existing, expected, status)
     if existing:
         responses.append(stat_row(0))
     conn = install_backend(monkeypatch, reset_service, *responses)
-    row = reset_service.reset_word_miss('["食べる"]')["results"][0]
+    row = reset_service.reset_word_miss('["食べる"]', username="tester")["results"][0]
     assert row["status"] == status
     assert row.get("counts") == (None if expected is None else {"miss_count": expected})
-    assert len(conn.statements) == (3 if existing else 2)
+    assert len(conn.statements) == (4 if existing else 3)
     assert all("INSERT" not in sql and "word_usage_tbl" not in sql for sql, _ in conn.statements)
     if existing:
         assert "miss_count <> 0" in conn.statements[-1][0]
@@ -179,9 +181,9 @@ def test_reset_missing_zero_and_nonzero(monkeypatch, existing, expected, status)
 @pytest.mark.parametrize("record", [None, database_row(status_code="D")])
 def test_reset_missing_or_deleted_unchanged(monkeypatch, record):
     conn = install_backend(monkeypatch, reset_service, record)
-    result = reset_service.reset_word_miss('["a"]')
+    result = reset_service.reset_word_miss('["a"]', username="tester")
     assert result == {"results": [{"index": 0, "word": "a", "status": "skipped", "reason": "单词不存在。"}]}
-    assert len(conn.statements) == 1
+    assert len(conn.statements) == 2
 
 
 ALL_TOOLS = CASES + [(reset_service, "reset_word_miss", "miss")]
@@ -233,16 +235,13 @@ def test_merge_restores_original_order_without_mutating_inputs():
 
 @pytest.mark.parametrize("service,name,kind", ALL_TOOLS)
 @pytest.mark.parametrize("values", [[], [None, "", " ", 1, {"word": "a"}, "\ud800", "\x00"]])
-def test_shared_filtering_without_configuration_or_connection(monkeypatch, service, name, kind, values):
-    config = Mock(side_effect=AssertionError("no config"))
-    connect = Mock(side_effect=AssertionError("no connection"))
-    monkeypatch.setattr(service, "get_settings", config)
-    monkeypatch.setattr(service, "open_connection", connect)
-    result = getattr(service, name)(json.dumps(values))
+def test_shared_filtering_checks_user_without_stat_writes(monkeypatch, service, name, kind, values):
+    conn = install_backend(monkeypatch, service)
+    result = getattr(service, name)(json.dumps(values), username="tester")
     expected = serialize_stats(parse_word_list_text(json.dumps(values)).skipped_results)
     assert result == expected
-    config.assert_not_called()
-    connect.assert_not_called()
+    assert len(conn.statements) == 1
+    assert "SELECT id, username FROM user_tbl" in conn.statements[0][0]
 
 
 @pytest.mark.parametrize("service,name,kind", ALL_TOOLS)
@@ -250,7 +249,7 @@ def test_stop_becomes_tool_error_without_database(monkeypatch, service, name, ki
     config = Mock(side_effect=AssertionError("no config"))
     monkeypatch.setattr(service, "get_settings", config)
     with pytest.raises(ToolError, match="JSON"):
-        getattr(service, name)('not JSON')
+        getattr(service, name)('not JSON', username="tester")
     config.assert_not_called()
 
 
@@ -258,19 +257,19 @@ def test_stop_becomes_tool_error_without_database(monkeypatch, service, name, ki
 def test_same_preprocessing_and_original_index_across_tools(monkeypatch, service, name, kind):
     responses = [database_row("a"), stat_row(9), stat_row(0)] if service is reset_service else [[database_row("a")], None, [stat_row(1)]]
     conn = install_backend(monkeypatch, service, *responses)
-    rows = getattr(service, name)('[null,"a","a",{"word":"b"}]')["results"]
+    rows = getattr(service, name)('[null,"a","a",{"word":"b"}]', username="tester")["results"]
     assert [row["index"] for row in rows] == [0, 1, 2, 3]
     assert [row["status"] for row in rows] == ["skipped", "updated", "skipped", "skipped"]
     assert rows[1]["word"] == "a" and "index=1" in rows[2]["reason"]
     assert rows[3]["word"] is None
-    assert len(conn.statements) == 3
+    assert len(conn.statements) == 4
 
 
 def test_reset_failure_rolls_back_only_that_item_and_keeps_indices(monkeypatch):
     conn = install_backend(monkeypatch, reset_service,
         database_row("a"), stat_row(9), psycopg.OperationalError("private"),
         database_row("b"), stat_row(2), stat_row(0))
-    rows = reset_service.reset_word_miss('[null,"a","b","a"]')["results"]
+    rows = reset_service.reset_word_miss('[null,"a","b","a"]', username="tester")["results"]
     assert [row["index"] for row in rows] == [0, 1, 2, 3]
     assert [row["status"] for row in rows] == ["skipped", "failed", "updated", "skipped"]
     assert "private" not in rows[1]["reason"] and "counts" not in rows[1]
@@ -283,8 +282,8 @@ def test_reset_protocol_accepts_string_list_and_skips_old_objects(monkeypatch):
 
     async def run():
         async with Client(mcp) as client:
-            assert (await client.call_tool_mcp("reset_word_miss", {"text": ["a"]})).isError
-            response = await client.call_tool_mcp("reset_word_miss", {"text": '[{"word":"a"},"a"]'})
+            assert (await client.call_tool_mcp("reset_word_miss", {"username": "tester", "text": ["a"]})).isError
+            response = await client.call_tool_mcp("reset_word_miss", {"username": "tester", "text": '[{"word":"a"},"a"]'})
             assert not response.isError
             rows = response.structuredContent["results"]
             assert rows[0]["status"] == "skipped"

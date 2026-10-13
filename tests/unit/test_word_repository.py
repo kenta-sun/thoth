@@ -66,9 +66,9 @@ class ScriptedConnection:
         self.row_factory = row_factory
         yield self
 
-    def execute(self, query: str, params: dict) -> None:
+    def execute(self, query: str, params: dict | None = None) -> None:
         """记录 SQL 及参数，消费一次响应，并构造真实行工厂所需的结果列元数据。"""
-        self.statements.append((query, params.copy()))
+        self.statements.append((query, (params or {}).copy()))
         response = next(self.responses)
         if isinstance(response, Exception):
             raise response

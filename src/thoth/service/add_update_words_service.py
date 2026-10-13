@@ -10,6 +10,7 @@ from typing import Any, Literal
 import psycopg
 from fastmcp.exceptions import ToolError
 
+from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
 from thoth.dao.tag_tbl_mapper import TagTblMapper
 from thoth.dao.word_tag_tbl_mapper import WordTagTblMapper
@@ -23,12 +24,13 @@ INFORMATION_FIELDS = ("common_form", "hiragana", "meaning")
 ALLOWED_FIELDS = {"word", *INFORMATION_FIELDS, "operation", "tags"}
 
 
-def add_update_words(text: str) -> dict[str, list[dict[str, Any]]]:
+def add_update_words(text: str, username: str) -> dict[str, list[dict[str, Any]]]:
     """解析单词 JSON 数组并保存，按输入顺序返回 results。
 
     本次调用共用一条连接，结束时关闭；每项单词及标签写入独立提交或回滚。
 
     Args:
+        username: 已手动创建的用户名，精确匹配，不存在时返回工具错误。
         text: 非空 JSON 数组字符串，每项包含单词信息、标签编码和可选操作。
 
     Returns:
@@ -38,10 +40,12 @@ def add_update_words(text: str) -> dict[str, list[dict[str, Any]]]:
         ToolError: 整批格式、配置、连接或批量查询失败，无法继续逐项保存。
     """
     try:
+        validate_username(username)
         # 先解析，格式错误时不读取配置或连接数据库。
         items = parse_words_text(text)
         settings = get_settings()
         with open_connection(settings) as connection:
+            require_user(connection, username)
             return serialize_word_batch(
                 save_word_batch(items, connection, operator=settings.operator)
             )

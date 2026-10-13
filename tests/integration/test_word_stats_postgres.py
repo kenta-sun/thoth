@@ -50,9 +50,10 @@ def database(monkeypatch):
         admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         try:
             admin.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
-            for table in ("word_sts_tbl", "word_tbl", "word_miss_tbl", "word_usage_tbl"):
+            for table in ("user_tbl", "word_sts_tbl", "word_tbl", "word_miss_tbl", "word_usage_tbl"):
                 admin.execute((root / f"sql/ddl/ddl__create_table__{table}.sql").read_text())
             admin.execute((root / "sql/dml/dml__word_sts_tbl.sql").read_text())
+            admin.execute("INSERT INTO user_tbl (username) VALUES ('tester'), ('other')")
             admin.execute("INSERT INTO word_tbl (word, common_form, hiragana, meaning) VALUES ('a','a','a','a'),('b','b','b','b')")
 
             @contextmanager
@@ -77,12 +78,12 @@ CASES = [(count_word_usage_service, "count_word_usage", "usage"),
 
 def count_miss():
     """完整错误计数调用。"""
-    return count_word_miss_service.count_word_miss('["a"]')["results"][0]
+    return count_word_miss_service.count_word_miss('["a"]', username="tester")["results"][0]
 
 
 def reset():
     """完整清零调用。"""
-    return reset_word_miss_service.reset_word_miss('["a"]')["results"][0]
+    return reset_word_miss_service.reset_word_miss('["a"]', username="tester")["results"][0]
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
@@ -92,7 +93,7 @@ def test_overlapping_concurrent_batches(database, service, name, kind):
 
     def increment(index):
         barrier.wait(timeout=10)
-        return getattr(service, name)(json.dumps(["a", "b"] if index % 2 else ["b", "a"]))["results"]
+        return getattr(service, name)(json.dumps(["a", "b"] if index % 2 else ["b", "a"]), username="tester")["results"]
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         batches = list(executor.map(increment, range(workers)))
@@ -108,8 +109,8 @@ def test_failed_batch_preserves_zero_initialization(database, service, name, kin
     table = sql.Identifier("word_" + kind + "_tbl")
     field = sql.Identifier(kind + "_count")
     with database() as connection:
-        connection.execute(sql.SQL("INSERT INTO {} (word_id, {}) SELECT id, 9223372036854775807 FROM word_tbl WHERE word='a'").format(table, field))
-    rows = getattr(service, name)('["b","a",null,"missing"]')["results"]
+        connection.execute(sql.SQL("INSERT INTO {} (user_id, word_id, {}) SELECT 1, id, 9223372036854775807 FROM word_tbl WHERE word='a'").format(table, field))
+    rows = getattr(service, name)('["b","a",null,"missing"]', username="tester")["results"]
     assert [row["status"] for row in rows] == ["failed", "failed", "skipped", "skipped"]
     assert all("counts" not in row for row in rows)
     with database() as connection:
@@ -124,13 +125,13 @@ def test_reset_and_count_follow_row_lock_order(database, first):
         with connection.transaction():
             word = WordTblMapper(connection).find_by_word_for_update("a")
             mapper = WordMissTblMapper(connection)
-            entity = WordMissEntity(word_id=word.id, updated_by="test")
+            entity = WordMissEntity(user_id=1, word_id=word.id, updated_by="test")
             if first == "reset":
-                mapper.find_for_update(word.id)
+                mapper.find_for_update(word.id, user_id=1)
                 mapper.reset(entity)
                 future = executor.submit(count_miss)
             else:
-                mapper.increment_many([entity], operator="test")
+                mapper.increment_many([entity], user_id=1, operator="test")
                 future = executor.submit(reset)
         result = future.result(timeout=15)
     assert result["counts"] == {"miss_count": 1 if first == "reset" else 0}
@@ -141,7 +142,7 @@ def test_reset_noop_preserves_audit_and_usage(database):
     with database() as connection:
         assert connection.execute("SELECT count(*) FROM word_miss_tbl").fetchone() == (0,)
     assert count_miss()["counts"] == {"miss_count": 1}
-    assert count_word_usage_service.count_word_usage('["a"]')["results"][0]["counts"] == {"usage_count": 1}
+    assert count_word_usage_service.count_word_usage('["a"]', username="tester")["results"][0]["counts"] == {"usage_count": 1}
     assert reset()["counts"] == {"miss_count": 0}
     with database() as connection:
         before = connection.execute("SELECT * FROM word_miss_tbl").fetchone()
@@ -156,10 +157,10 @@ def test_status_change_during_batch_is_not_reported_success(database, monkeypatc
     method = "initialize_many" if stage == "before_initialize" else "increment_many"
     original = getattr(WordMissTblMapper, method)
 
-    def change_status(self, entities, *, operator):
+    def change_status(self, entities, *, user_id, operator):
         with database() as connection:
             connection.execute("UPDATE word_tbl SET status_code='D' WHERE word='a'")
-        return original(self, entities, operator=operator)
+        return original(self, entities, user_id=user_id, operator=operator)
 
     monkeypatch.setattr(WordMissTblMapper, method, change_status)
     row = count_miss()
@@ -173,5 +174,5 @@ def test_initialization_preserves_existing_audit(database):
     assert count_miss()["status"] == "updated"
     with database() as connection:
         before = connection.execute("SELECT * FROM word_miss_tbl").fetchone()
-        WordMissTblMapper(connection).initialize_many([WordMissEntity(word_id=before[0])], operator="different")
+        WordMissTblMapper(connection).initialize_many([WordMissEntity(user_id=1, word_id=before[1])], user_id=1, operator="different")
         assert connection.execute("SELECT * FROM word_miss_tbl").fetchone() == before

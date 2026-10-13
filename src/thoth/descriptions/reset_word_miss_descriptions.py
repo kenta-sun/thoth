@@ -1,8 +1,12 @@
 """reset_word_miss 的对外说明，由 MCP 入口注册时使用。"""
 
-RESET_WORD_MISS_DESCRIPTION = """按 word 精确定位单词，仅将已有 miss_count 清零。
+RESET_WORD_MISS_DESCRIPTION = """必填参数 username 为独立字符串，与 text 并列传入，不放在 text 内。
+用户名须已存在，为 1～128 字符且无首尾空白，区分大小写，不自动创建或选择用户。
+可先通过 query_users 查询已有用户名；不存在或非法用户名返回工具错误。
+使用次数与陌生次数均按指定用户隔离；不能读取或改变其他用户的计数。
+按 word 精确定位单词，仅将已有 miss_count 清零。
 
-唯一参数 text 是 JSON 字符串数组的字符串，不得包含 Markdown 或额外说明。
+参数 text 是 JSON 字符串数组的字符串，不得包含 Markdown 或额外说明。
 解析后示例：["食べる","飲む"]。每个有效元素是单词字符串，保留原文，
 不去空格、不转换词形。空数组正常返回空 results。null、空字符串、纯空白、
 非字符串及数据库不支持的文本逐项 skipped 并附原因；旧 word 对象元素也跳过。
@@ -12,7 +16,7 @@ RESET_WORD_MISS_DESCRIPTION = """按 word 精确定位单词，仅将已有 miss
 无错误计数记录时跳过且不创建记录；已有计数为零也跳过并保留审计信息。
 非零时更新为零，不删除记录。每个单词独立事务，失败不影响其他单词。
 同批重复单词只处理首次出现项，后续项 skipped 并注明首次下标。
-空数组或全部过滤时，不读取配置、不连接数据库。
+空数组或全部过滤时仍连接数据库校验用户，不执行统计写入。
 返回 results，按输入顺序含 index（零基）、word、status。
 updated 表示已清零，counts 为 {"miss_count":0}；skipped 或 failed 附 reason。
 已有零值记录时 skipped 同时返回 counts；无记录时省略 counts，不伪装成零值。

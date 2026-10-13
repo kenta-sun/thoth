@@ -6,6 +6,7 @@ from typing import Any
 import psycopg
 from fastmcp.exceptions import ToolError
 
+from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
 from thoth.common.query_words import COUNT_FIELDS, QUERY_FIELDS, QUERY_OPERATORS
 from thoth.dao.word_tbl_mapper import WordTblMapper
@@ -127,10 +128,11 @@ def serialize_query(rows: list[QueryWordResult], fields: tuple[str, ...]) -> dic
     return {"results": results}
 
 
-def query_words(text: str) -> dict[str, list[dict[str, Any]]]:
+def query_words(text: str, username: str) -> dict[str, list[dict[str, Any]]]:
     """查询未删除单词，缺失统计按零参与筛选和排序；不产生任何数据库写入。
 
     Args:
+        username: 已手动创建的用户名，精确匹配，不存在时返回工具错误。
         text: JSON 对象字符串，省略 limit 时返回全部匹配记录。
 
     Returns:
@@ -140,9 +142,11 @@ def query_words(text: str) -> dict[str, list[dict[str, Any]]]:
         ToolError: 输入、配置、连接或查询失败；驱动错误不暴露 SQL 与连接详情。
     """
     try:
+        validate_username(username)
         request = parse_query(text)
         with open_connection(get_settings()) as connection:
-            rows = WordTblMapper(connection).query_words(request)
+            user = require_user(connection, username)
+            rows = WordTblMapper(connection).query_words(request, user_id=user.id)
         return serialize_query(rows, request.fields)
     except (ValueError, DatabaseError) as exc:
         raise ToolError(str(exc)) from exc

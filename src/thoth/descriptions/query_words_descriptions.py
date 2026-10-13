@@ -3,7 +3,11 @@
 from thoth.common.tags import TAG_OPTIONS_DESCRIPTION
 
 
-QUERY_WORDS_DESCRIPTION = """查询未删除的日语单词，不修改数据。唯一参数 text 为 JSON 对象字符串，无 Markdown。
+QUERY_WORDS_DESCRIPTION = """必填参数 username 为独立字符串，与 text 并列传入，不放在 text 内。
+用户名须已存在，为 1～128 字符且无首尾空白，区分大小写，不自动创建或选择用户。
+可先通过 query_users 查询已有用户名；不存在或非法用户名返回工具错误。
+使用次数与陌生次数均按指定用户隔离；不能读取或改变其他用户的计数。
+查询未删除的日语单词，不修改数据。参数 text 为 JSON 对象字符串，无 Markdown。
 四个可选字段：where 筛选、fields 返回字段数组、sort 按优先级排列的 [[字段,"asc"或"desc"]]、limit 正整数。
 省略 where 不额外筛选；省略 fields 返回全部业务字段；省略 sort 按单词 ID 升序；省略 limit 返回全部。
 业务字段：word、common_form、hiragana、meaning、tags、usage_count、miss_count，不含状态和审计字段。

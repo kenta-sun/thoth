@@ -11,6 +11,7 @@ from typing import get_type_hints
 import pytest
 
 from thoth.entity import (
+    UserEntity,
     TagEntity,
     WordEntity,
     WordMissEntity,
@@ -22,6 +23,7 @@ from thoth.entity import (
 
 DDL_DIRECTORY = Path(__file__).resolve().parents[2] / "sql" / "ddl"
 TABLE_ENTITIES = {
+    "user_tbl": UserEntity,
     "word_tbl": WordEntity,
     "tag_tbl": TagEntity,
     "word_sts_tbl": WordStatusEntity,

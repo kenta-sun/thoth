@@ -7,4 +7,6 @@ from thoth.entity.word_tag import WordTagEntity
 from thoth.entity.word_usage import WordUsageEntity
 from thoth.entity.word_miss import WordMissEntity
 
-__all__ = ['WordEntity', 'TagEntity', 'WordStatusEntity', 'WordTagEntity', 'WordUsageEntity', 'WordMissEntity']
+from thoth.entity.user import UserEntity
+
+__all__ = ['WordEntity', 'TagEntity', 'WordStatusEntity', 'WordTagEntity', 'WordUsageEntity', 'WordMissEntity', 'UserEntity']

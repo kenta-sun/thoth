@@ -13,7 +13,8 @@ from datetime import datetime
 class WordMissEntity:
     """word_miss_tbl 的陌生词统计记录，按单词汇总默写错误和向 AI 询问的次数。"""
 
-    word_id: int | None = None  # 关联 word_tbl.id 的主键，每个单词最多一条陌生统计。
+    user_id: int | None = None  # 关联 user_tbl.id，与 word_id 构成联合主键。
+    word_id: int | None = None  # 关联 word_tbl.id 的联合主键字段，每个用户对每个单词最多一条陌生统计。
     miss_count: int | None = None  # 默写错误及向 AI 询问该词的累计次数；表默认 0，并限制非负。
     created_at: datetime | None = None  # 带时区的创建时间；表默认值为数据库当前时间。
     updated_at: datetime | None = None  # 带时区的最后更新时间；插入默认当前时间，更新需由 SQL 维护。

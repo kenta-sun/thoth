@@ -30,13 +30,13 @@ def query_database(database, monkeypatch):
                OR (w.word IN ('b','d') AND t.code='n') OR (w.word='deleted' AND t.code='v')
         """)
         connection.execute("""
-            INSERT INTO word_usage_tbl (word_id, usage_count)
-            SELECT id, CASE word WHEN 'b' THEN 3 WHEN 'd' THEN 1 ELSE 0 END
+            INSERT INTO word_usage_tbl (user_id, word_id, usage_count)
+            SELECT 1, id, CASE word WHEN 'b' THEN 3 WHEN 'd' THEN 1 ELSE 0 END
             FROM word_tbl WHERE word IN ('b','c','d')
         """)
         connection.execute("""
-            INSERT INTO word_miss_tbl (word_id, miss_count)
-            SELECT id, CASE word WHEN 'a' THEN 4 WHEN 'c' THEN 2 ELSE 9 END
+            INSERT INTO word_miss_tbl (user_id, word_id, miss_count)
+            SELECT 1, id, CASE word WHEN 'a' THEN 4 WHEN 'c' THEN 2 ELSE 9 END
             FROM word_tbl WHERE word IN ('a','c','d')
         """)
     monkeypatch.setattr(service, "open_connection", database)
@@ -46,7 +46,7 @@ def query_database(database, monkeypatch):
 
 def query(raw):
     """调用真实查询 Service 并返回对象列表。"""
-    return service.query_words(json.dumps(raw))["results"]
+    return service.query_words(json.dumps(raw), username="tester")["results"]
 
 
 def test_defaults_and_projection_do_not_write_statistics(query_database):
