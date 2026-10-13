@@ -3,14 +3,26 @@
 目标：开发继续使用 thoth 源码目录；「日本語」项目调用独立安装的稳定版本，连接你配置的正式数据库（本文以 `thoth_memory` 为例，名称可自定义）。
 MCP 使用 stdio，由 Codex 启动本地进程，不需要额外开启 HTTP 服务、购买服务器或发布到 PyPI。
 
-以下命令按当前电脑路径编写，在 macOS 终端逐块执行。任何一步报错，都先停在该步处理，成功后再继续。
+以下命令按当前电脑路径编写，在同一个 macOS 终端窗口中按顺序逐块执行。每个 shell 代码块是一条完整命令，执行成功后再复制下一块。任何一步报错，都先停在该步处理，成功后再继续。
 文件内容使用文本编辑器填写；不要将密码直接写进终端命令。本文中的 `YOUR_USER`、`YOUR_PASSWORD` 必须替换。
 
 ## 1. 确认工具与正式数据库
 
+进入 thoth 开发项目目录，后面的相对路径以这里为起点。
+
 ```shell
 cd /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth
+```
+
+确认 uv 已安装，并查看版本。
+
+```shell
 uv --version
+```
+
+确认开发环境的 Python 版本。
+
+```shell
 .venv/bin/python --version
 ```
 
@@ -19,10 +31,15 @@ uv --version
 开发配置使用 `localhost:12001/thoth_dev`。如果正式库也在同一个 PostgreSQL 实例，正式连接使用 `localhost:12001/thoth_memory`；若正式库在另一台机器，后面同时修改主机和端口。
 打包安装不会创建数据库，也不会复制开发数据。
 
-在你自己的数据库客户端选择正式库，手动执行以下只读 SQL：
+在你自己的数据库客户端选择正式库，先手动执行这条只读 SQL，确认当前连接的数据库名称：
 
 ```sql
 SELECT current_database();
+```
+
+再执行下面这一条 SQL，检查七张表是否存在。这条 SQL 虽然分为多行，仍需整块复制执行：
+
+```sql
 SELECT name, to_regclass(name) AS existing_table
 FROM unnest(ARRAY[
   'user_tbl', 'word_tbl', 'word_sts_tbl', 'tag_tbl',
@@ -35,10 +52,15 @@ FROM unnest(ARRAY[
 只有你确认这是全新、允许清空的目标库时，才可手动执行项目中的 `sql/rebuild_all.sql` 初始化。
 **该脚本会删除并重建七张表，已有数据会被清空；它不是日常安装或升级步骤。**
 
-表准备好后，手动确认用户和标签：
+表准备好后，执行这条只读 SQL，查看已有用户名：
 
 ```sql
 SELECT username FROM user_tbl ORDER BY id;
+```
+
+执行这条只读 SQL，查看标签数量，确认标签已初始化：
+
+```sql
 SELECT count(*) AS tag_count FROM tag_tbl;
 ```
 
@@ -51,11 +73,33 @@ ON CONFLICT (username) DO NOTHING;
 
 ## 2. 验证代码、打包并导出固定版本依赖
 
+进入 thoth 开发项目目录，后面的相对路径以这里为起点。
+
 ```shell
 cd /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth
+```
+
+按照锁文件安装开发依赖，准备测试和打包环境。
+
+```shell
 uv sync --locked
+```
+
+运行全部单元测试；全部通过后再继续。忽略生产配置文件及敏感目录，避免测试收集扫描它们。
+
+```shell
 .venv/bin/python -m pytest tests/unit --ignore=.env.prd --ignore=secrets
+```
+
+构建 wheel 安装包，输出到开发项目的 dist 目录。
+
+```shell
 uv build --wheel --out-dir dist
+```
+
+从锁文件导出正式运行依赖和校验哈希，保存到 dist/requirements.lock.txt。
+
+```shell
 uv export --locked --no-dev --no-emit-project --output-file dist/requirements.lock.txt --quiet
 ```
 
@@ -65,15 +109,57 @@ uv export --locked --no-dev --no-emit-project --output-file dist/requirements.lo
 
 ## 3. 创建正式目录并安装程序
 
+创建正式配置目录，后面在这里手动保存配置文件。
+
 ```shell
 mkdir -p /Users/ethan/.local/share/thoth/config
+```
+
+创建 0.1.0 版本的独立部署目录。
+
+```shell
 mkdir -p /Users/ethan/.local/share/thoth/releases/0.1.0
+```
+
+将正式配置目录设为仅当前用户可以访问。
+
+```shell
 chmod 700 /Users/ethan/.local/share/thoth/config
+```
+
+把 wheel 安装包复制到正式版本目录保存。
+
+```shell
 cp /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/dist/thoth-0.1.0-py3-none-any.whl /Users/ethan/.local/share/thoth/releases/0.1.0/
+```
+
+把固定版本依赖清单复制到正式版本目录保存。
+
+```shell
 cp /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/dist/requirements.lock.txt /Users/ethan/.local/share/thoth/releases/0.1.0/
+```
+
+为正式版本创建独立 Python 虚拟环境。
+
+```shell
 uv venv /Users/ethan/.local/share/thoth/releases/0.1.0/.venv --python /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/.venv/bin/python
+```
+
+按照依赖清单安装正式依赖，并校验下载文件的哈希。
+
+```shell
 uv pip sync --python /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python /Users/ethan/.local/share/thoth/releases/0.1.0/requirements.lock.txt --require-hashes
+```
+
+将 thoth 安装包安装到正式虚拟环境；依赖已在上一条命令中安装。
+
+```shell
 uv pip install --python /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python --no-deps /Users/ethan/.local/share/thoth/releases/0.1.0/thoth-0.1.0-py3-none-any.whl
+```
+
+检查正式虚拟环境中的依赖是否完整、版本是否兼容。
+
+```shell
 uv pip check --python /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python
 ```
 
@@ -86,14 +172,14 @@ uv pip check --python /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/p
 Finder 可用 `Command + Shift + G` 输入目录，再用 `Command + Shift + .` 显示隐藏文件。
 文本编辑器保存为纯文本，确保没有多加 `.txt` 后缀。
 
-文件一：`/Users/ethan/.local/share/thoth/config/.env`
+文件一：`/Users/ethan/.local/share/thoth/config/.env`。以下是文件内容，请整块粘贴到文件中，不在终端执行：
 
 ```dotenv
 THOTH_ENV=prd
 THOTH_OPERATOR=THOTH_MCP
 ```
 
-文件二：`/Users/ethan/.local/share/thoth/config/.env.prd`
+文件二：`/Users/ethan/.local/share/thoth/config/.env.prd`。以下是文件内容，请替换占位符后粘贴到文件中，不在终端执行：
 
 ```dotenv
 THOTH_PG_DSN=postgresql://YOUR_USER:YOUR_PASSWORD@localhost:12001/thoth_memory
@@ -107,7 +193,7 @@ THOTH_PG_DSN=postgresql://YOUR_USER:YOUR_PASSWORD@localhost:12001/thoth_memory
 仓库根目录的 `.env.prd` 不会被这套部署读取；这里使用的是独立正式目录。配置文件由你手动创建和维护，不放入 wheel 或 Git。
 `THOTH_CONFIG_DIR` 在第 6 步的 MCP 配置中设置，不写进上述两个文件。
 
-保存后执行：
+保存两个配置文件后，执行这条命令，将它们设为仅当前用户可读写：
 
 ```shell
 chmod 600 /Users/ethan/.local/share/thoth/config/.env /Users/ethan/.local/share/thoth/config/.env.prd
@@ -115,7 +201,7 @@ chmod 600 /Users/ethan/.local/share/thoth/config/.env /Users/ethan/.local/share/
 
 ## 5. 检查安装位置和配置加载
 
-以下命令只检查安装与配置，不连接数据库，不输出连接串：
+以下是一条包含多行 Python 脚本的完整终端命令，只检查安装与配置，不连接数据库，不输出连接串。请从 `env` 开始到最后一行 `PY` 为止整块复制并执行，不要逐行拆开执行：
 
 ```shell
 env -u THOTH_PG_DSN -u THOTH_OPERATOR -u PYTHONPATH THOTH_ENV=prd THOTH_CONFIG_DIR=/Users/ethan/.local/share/thoth/config /Users/ethan/.local/share/thoth/releases/0.1.0/.venv/bin/python -I - <<'PY'
@@ -137,11 +223,13 @@ PY
 
 ## 6. 给「日本語」项目添加 MCP 配置
 
+执行这条命令，创建「日本語」项目的 Codex 配置目录：
+
 ```shell
 mkdir -p /Users/ethan/Documents/Japanese/.codex
 ```
 
-在文本编辑器中打开或新建 `/Users/ethan/Documents/Japanese/.codex/config.toml`，添加以下内容。
+在文本编辑器中打开或新建 `/Users/ethan/Documents/Japanese/.codex/config.toml`，将下面整块配置粘贴到文件中，不在终端执行。
 如果已有其他设置，保留它们；已有同名 `[mcp_servers.thoth]` 时修改原块，不重复添加。
 
 ```toml
@@ -184,7 +272,7 @@ MCP 管理页面应能看到 thoth 连接成功。无需手动在终端保持 `p
 
 ## 8. 开始正式使用并记录版本
 
-日常在「日本語」项目聊天中使用查词、保存单词和统计工具。可在该项目现有 `AGENTS.md` 中按需追加：
+日常在「日本語」项目聊天中使用查词、保存单词和统计工具。可在该项目现有 `AGENTS.md` 中按需追加下面整块文字；这是文件内容，不在终端执行：
 
 ```text
 日语词库使用 thoth MCP。我的词库用户名是 ethan。
@@ -197,7 +285,12 @@ MCP 管理页面应能看到 thoth 连接成功。无需手动在终端保持 `p
 
 ## 后续升级与回退
 
-1. 在开发项目完成修改和测试，将 `pyproject.toml` 的版本号提升（例如 `0.1.1`），运行 `uv lock` 更新锁文件。
+1. 在开发项目完成修改和测试，将 `pyproject.toml` 的版本号提升（例如 `0.1.1`），然后执行下面这一条命令更新锁文件：
+
+   ```shell
+   uv lock
+   ```
+
 2. 按第 2 步重新验证、打包和导出依赖，wheel 文件名随版本变为 `thoth-0.1.1-py3-none-any.whl`。
 3. 按第 3 步安装到新的 `releases/0.1.1`，将命令中的版本号全部替换；保留 `releases/0.1.0`，共用已有正式配置目录。
 4. 用第 5 步检查新版本，将检查命令中的 `0.1.0` 改成 `0.1.1`。
