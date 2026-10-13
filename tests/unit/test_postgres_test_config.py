@@ -8,27 +8,14 @@ import pytest
 from tests.integration import test_word_stats_postgres as integration
 
 
-@pytest.mark.parametrize("value", ["", "  process-test-dsn  "])
-def test_process_setting_prevents_file_read(monkeypatch, value):
-    """显式环境变量即使为空也优先，不读取本地配置。"""
-    monkeypatch.setenv("THOTH_TEST_PG_DSN", value)
-    reader = Mock(side_effect=AssertionError("不应读取文件"))
-    monkeypatch.setattr(integration, "dotenv_values", reader)
-    assert integration._load_test_dsn(Path("project")) == value.strip()
-    reader.assert_not_called()
-
-
-@pytest.mark.parametrize("values,expected", [
-    ({"THOTH_TEST_PG_DSN": " file-test-dsn "}, "file-test-dsn"),
-    ({"THOTH_PG_DSN": "business-dsn"}, ""),
-])
-def test_file_uses_only_test_connection(monkeypatch, values, expected):
-    """缺少进程配置时仅取文件中的测试连接，不使用业务连接。"""
-    monkeypatch.delenv("THOTH_TEST_PG_DSN", raising=False)
-    reader = Mock(return_value=values)
-    monkeypatch.setattr(integration, "dotenv_values", reader)
-    assert integration._load_test_dsn(Path("project")) == expected
-    reader.assert_called_once_with(Path("project/.env"))
+def test_test_entry_explicitly_selects_test(monkeypatch):
+    """测试入口固定选择 test，不受生产环境选择影响。"""
+    monkeypatch.setenv("THOTH_ENV", "prd")
+    settings = Mock(pg_dsn="test-dsn")
+    loader = Mock(return_value=settings)
+    monkeypatch.setattr(integration, "load_settings", loader)
+    assert integration._load_test_dsn(Path("project")) == "test-dsn"
+    loader.assert_called_once_with("test", root=Path("project"))
 
 
 @pytest.mark.parametrize("database_name", ["thoth_memory", "postgres"])

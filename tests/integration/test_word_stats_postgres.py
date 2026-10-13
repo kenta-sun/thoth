@@ -1,7 +1,6 @@
 """真实 PostgreSQL 验证：从环境或项目配置读取专用测试 DSN，使用临时 schema。"""
 
 import json
-import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -10,10 +9,10 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import psycopg
-from dotenv import dotenv_values
 from psycopg import sql
 import pytest
 
+from thoth.common.config import load_settings
 from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.dao.word_miss_tbl_mapper import WordMissTblMapper
 from thoth.entity import WordMissEntity
@@ -21,10 +20,8 @@ from thoth.service import count_word_usage_service, count_word_miss_service, res
 
 
 def _load_test_dsn(root):
-    """优先采用进程变量，否则读取项目 .env；不回退到业务连接，空值表示未配置。"""
-    if "THOTH_TEST_PG_DSN" in os.environ:
-        return os.environ["THOTH_TEST_PG_DSN"].strip()
-    return (dotenv_values(root / ".env").get("THOTH_TEST_PG_DSN") or "").strip()
+    """固定加载 test 配置；配置缺失或错误时明确失败，不回退其他环境。"""
+    return load_settings("test", root=root).pg_dsn
 
 
 @contextmanager
@@ -48,8 +45,6 @@ def database(monkeypatch):
     """在显式提供的测试库建立独立 schema，结束时只删除该 schema。"""
     root = Path(__file__).resolve().parents[2]
     dsn = _load_test_dsn(root)
-    if not dsn:
-        pytest.skip("未提供 THOTH_TEST_PG_DSN，真实 PostgreSQL 测试未执行")
     schema = "thoth_stats_test_" + uuid4().hex
     with _connect_test_database(dsn) as admin:
         admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))

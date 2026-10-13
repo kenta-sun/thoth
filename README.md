@@ -6,12 +6,37 @@
 
 ## 配置与启动
 
-使用 Python 3.11 或更高版本，以及项目现有的虚拟环境。配置可放在项目根目录的 `.env` 中，或通过环境变量传入；环境变量优先。
+使用 Python 3.11 或更高版本，以及项目现有的虚拟环境。配置目录固定为项目根目录，不依赖启动时的工作目录。
+
+首次配置时复制 `.env.example` 为 `.env`，复制需要使用的 `.env.dev.example`、`.env.test.example` 或 `.env.prd.example` 为对应环境文件，并填写真实数据库凭证。正式生产配置仅放在正式部署目录；真实 `.env` 和 `.env.*` 文件均不提交 Git。
+
+| 文件 | 用途 | 对应数据库 |
+| --- | --- | --- |
+| `.env` | 通过 `THOTH_ENV=dev` 选择默认环境，并存放公共配置；禁止放连接串 | — |
+| `.env.dev` | 开发版 Thoth 配置 | `thoth_dev` |
+| `.env.test` | 集成测试配置 | `thoth_test` |
+| `.env.prd` | 正式部署配置 | `thoth_memory` |
 
 | 配置项 | 说明 |
 | --- | --- |
-| `THOTH_PG_DSN` | 必填，PostgreSQL 连接字符串，指向已有的单词数据库。 |
+| `THOTH_ENV` | 必填，仅允许 `dev`、`test`、`prd`；进程变量优先于公共 `.env`。 |
+| `THOTH_PG_DSN` | 必填，存放在选中的环境文件或进程变量中。三个环境使用相同配置名。 |
 | `THOTH_OPERATOR` | 可选，写入审计字段的操作者标识，默认 `THOTH_MCP`。 |
+
+配置值优先级为进程变量 > 选定环境文件 > 公共 `.env`。每次只加载一个环境文件，不修改全局进程变量，也不展开 `${VAR}`。环境名非法、环境文件缺失或连接串为空时直接报错，不回退其他环境。即使使用进程连接串，对应环境文件也必须存在。配置首次使用后缓存，修改配置需重启服务。
+
+数据库连接建立后，先只读查询实际库名，再核对环境与库名映射；不匹配时关闭连接，拒绝执行业务 SQL。该检查用于防止误连，不代替数据库账户权限隔离。
+
+```shell
+# 采用 .env 中的默认环境
+.venv/bin/python -m thoth.mcp_server
+# 在正式部署目录显式选择生产环境
+THOTH_ENV=prd .venv/bin/python -m thoth.mcp_server
+```
+
+MCP 客户端也可在服务启动配置的 `env` 中设置 `THOTH_ENV`。Docker 自带 PostgreSQL MCP 使用它自己的连接设置，不读取本项目环境文件，开发时继续指向 `thoth_dev`。
+
+迁移旧配置时，将公共 `.env` 中的 `THOTH_PG_DSN` 移入 `.env.dev`，将 `THOTH_TEST_PG_DSN` 移入 `.env.test` 并改名为 `THOTH_PG_DSN`；旧测试变量不再读取。
 
 运行不需要 OpenAI API Key。服务使用已有的单词表、标签表及关联表，不自动建表、修改表结构或调整数据库账号权限。
 
@@ -226,7 +251,7 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 
 ## 启动 MCP
 
-先在现有配置中设置 `THOTH_PG_DSN`，指向已有的 PostgreSQL 单词库。可选的 `THOTH_OPERATOR` 默认值为 `THOTH_MCP`。环境变量优先于项目根目录的 `.env`。
+先按上文准备 `.env` 和对应环境文件。默认选择 `dev`，正式部署显式指定 `THOTH_ENV=prd`；连接串必须与环境对应的数据库匹配。
 
 ```shell
 .venv/bin/python -m thoth.mcp_server
@@ -249,9 +274,16 @@ JSON 解析后，单词字段直接构造成 `WordEntity`，`operation` 和完�
 ## PostgreSQL 集成测试
 
 单元测试不需要数据库。真实查询、并发、事务回滚和审计验证使用专用测试库：
-在项目根目录 `.env` 或运行环境中设置 `THOTH_TEST_PG_DSN`，指向独立数据库 `thoth_test`，再执行
-`.venv/bin/python -m pytest tests/integration`。
-进程环境变量优先于 `.env`，不会回退使用业务连接 `THOTH_PG_DSN`。
-每次连接会先确认实际数据库名为 `thoth_test`，确认后才允许写入。
-测试会在测试库中创建随机独立 schema，完成后删除该 schema；
-测试账号需要创建 schema 的权限。未设置测试 DSN 时，这组测试明确标记为跳过。
+测试入口固定调用配置加载器选择 `test`，无视公共 `.env` 和进程 `THOTH_ENV` 的日常环境选择。
+在 `.env.test` 中设置 `THOTH_PG_DSN` 指向 `thoth_test`，执行：
+
+```shell
+.venv/bin/python -m pytest tests/unit
+.venv/bin/python -m pytest tests/integration
+```
+
+进程中的 `THOTH_PG_DSN` 仍具有最高优先级；如果它误指向开发库或生产库，实际库名检查会在任何测试写入前拒绝执行。
+测试配置缺失或连接失败时明确失败，不跳过、不回退其他环境。
+每次连接先确认实际数据库名为 `thoth_test`，确认后才允许写入。
+每个测试在测试库中创建随机独立 schema，正常完成或断言失败时在 finally 中删除该 schema 及其中的表和数据；不会清空整个库。
+进程被强制终止时可能残留临时 schema，不会自动删除其他测试的 schema。测试账号需要创建 schema 的权限。

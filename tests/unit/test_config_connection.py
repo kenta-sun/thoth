@@ -13,9 +13,12 @@ TEST_DSN = "postgresql://test_user:test_password@invalid.test/test_words"
 
 
 @pytest.fixture(autouse=True)
-def isolated_configuration(monkeypatch):
+def isolated_configuration(monkeypatch, tmp_path):
     """屏蔽本地配置读取，隔离进程环境，并在每个测试前后清空配置缓存。"""
-    monkeypatch.setattr(config, "_load_env_file", lambda: None)
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    (tmp_path / ".env").write_text("THOTH_ENV=dev\n")
+    (tmp_path / ".env.dev").write_text("")
+    monkeypatch.delenv("THOTH_ENV", raising=False)
     monkeypatch.setenv("THOTH_PG_DSN", TEST_DSN)
     monkeypatch.delenv("THOTH_OPERATOR", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -86,6 +89,7 @@ def test_settings_repr_omits_connection_credentials():
 def fake_connect(monkeypatch):
     """替换驱动连接函数，返回可检查调用参数和关闭次数的模拟对象。"""
     connect = Mock(return_value=Mock())
+    connect.return_value.execute.return_value.fetchone.return_value = ("thoth_dev",)
     monkeypatch.setattr(connection_module.psycopg, "connect", connect)
     return connect
 
@@ -126,3 +130,25 @@ def test_connection_error_does_not_echo_dsn_or_credentials(fake_connect):
     assert "THOTH_PG_DSN" in message
     assert TEST_DSN not in message
     assert "test_password" not in message
+
+
+@pytest.mark.parametrize("environment,actual", [("dev", "thoth_memory"), ("test", "thoth_dev"), ("prd", "thoth_test")])
+def test_wrong_database_never_reaches_business_code(fake_connect, environment, actual):
+    """三种环境均先检查库名，不匹配时关闭连接且不执行调用方业务。"""
+    fake_connect.return_value.execute.return_value.fetchone.return_value = (actual,)
+    with pytest.raises(connection_module.DatabaseError, match="环境不匹配"):
+        with connection_module.open_connection(config.Settings(TEST_DSN, environment=environment)):
+            pytest.fail("错误库不得交给业务层")
+    fake_connect.return_value.execute.assert_called_once_with("SELECT current_database()")
+    fake_connect.return_value.close.assert_called_once_with()
+
+
+def test_database_check_error_closes_and_hides_credentials(fake_connect):
+    """库名检查失败也释放连接，不展示驱动错误中的凭证。"""
+    fake_connect.return_value.execute.side_effect = psycopg.OperationalError(TEST_DSN)
+    with pytest.raises(connection_module.DatabaseError, match="无法确认") as error:
+        with connection_module.open_connection():
+            pytest.fail("不得执行业务")
+    assert TEST_DSN not in str(error.value)
+    assert error.value.__suppress_context__
+    fake_connect.return_value.close.assert_called_once_with()

@@ -1,7 +1,7 @@
-"""公共配置模块：读取单词服务的运行配置，供业务层和数据库连接层使用。
+"""公共配置层：按运行环境合并配置，供业务服务和数据库连接层使用。
 
-首次调用 get_settings 时才读取本地配置和环境变量，并缓存解析后的 Settings。
-模块导入本身不加载配置、不连接数据库，便于 MCP 工具发现和单元测试。
+配置来自公共 .env、选定的环境文件及进程变量，不修改 os.environ。
+业务服务首次读取时缓存配置；集成测试显式选择 test，不跟随日常环境。
 """
 
 from __future__ import annotations
@@ -10,57 +10,68 @@ import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
-# 配置文件位置以项目目录为准，避免 MCP 客户端的启动目录影响配置读取。
-# parents[3] 对应 src/thoth/common/config.py 所在的项目根目录。
+# 按源码位置确定配置目录，不依赖 MCP 客户端的工作目录。
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ENV_FILE_PATH = PROJECT_ROOT / ".env"
+ENV_DATABASES = MappingProxyType({"dev": "thoth_dev", "test": "thoth_test", "prd": "thoth_memory"})
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """已解析的运行配置；冻结字段以防共享的缓存配置被调用方修改。"""
+    """承载选定环境的连接与审计配置，不在展示结果中暴露连接凭证。"""
 
-    pg_dsn: str = field(repr=False)  # PostgreSQL 连接字符串；可能含凭证，不纳入 repr。
+    pg_dsn: str = field(repr=False)  # 当前环境的 PostgreSQL 连接串，可能含密码。
     operator: str = "THOTH_MCP"  # 写入 created_by、updated_by 的操作者标识。
+    environment: str = "dev"  # 运行环境，仅允许 dev、test、prd。
+
+    @property
+    def expected_database(self) -> str:
+        """返回当前环境必须连接的数据库名；非法环境在连接前报错。"""
+        if self.environment not in ENV_DATABASES:
+            raise ValueError("THOTH_ENV 必须为 dev、test 或 prd。")
+        return ENV_DATABASES[self.environment]
 
 
-def _load_env_file() -> None:
-    """加载项目根目录的配置文件，已设置的进程环境变量优先。"""
-    load_dotenv(dotenv_path=ENV_FILE_PATH, override=False)
+def load_settings(environment: str | None = None, *, root: Path | None = None) -> Settings:
+    """选择单个环境文件并合并配置，缺失配置时拒绝回退。
 
-
-def load_settings() -> Settings:
-    """读取并校验一次配置，不使用 get_settings 的缓存。
-
-    已设置的进程环境变量优先于本地配置文件；连接字符串两端空白会被去掉。
-    操作者未提供或仅有空白时使用 THOTH_MCP。
+    Args:
+        environment: 显式选择的环境；None 时按进程 THOTH_ENV、公共 .env 的顺序选择。
+            测试入口固定传 test，覆盖日常环境选择。
+        root: 配置文件目录；None 时使用项目根目录。
 
     Returns:
-        可交给连接层和 DAO 层使用的配置对象。
+        不含全局环境变量副作用的配置；值优先级为进程、环境文件、公共文件。
 
     Raises:
-        ValueError: 缺少有效连接字符串，或操作者超过审计列允许的 128 个字符。
+        ValueError: 环境非法、环境文件缺失、连接串缺失或审计标识过长。
     """
-    _load_env_file()
-    pg_dsn = os.getenv("THOTH_PG_DSN", "").strip()
+    directory = PROJECT_ROOT if root is None else root
+    # 不插值，避免 dotenv 隐式读取进程变量或把其他环境的连接串带入。
+    common = dotenv_values(directory / ".env", interpolate=False)
+    selected = environment if environment is not None else os.environ.get("THOTH_ENV", common.get("THOTH_ENV"))
+    selected = (selected or "").strip()
+    if selected not in ENV_DATABASES:
+        raise ValueError("THOTH_ENV 必须为 dev、test 或 prd，且不得为空。")
+    env_file = directory / f".env.{selected}"
+    if not env_file.is_file():
+        raise ValueError(f"缺少环境配置文件 .env.{selected}。")
+    if "THOTH_PG_DSN" in common:
+        raise ValueError("公共 .env 不允许配置 THOTH_PG_DSN，请移入对应环境文件。")
+    values = {**common, **dotenv_values(env_file, interpolate=False), **os.environ}
+    pg_dsn = (values.get("THOTH_PG_DSN") or "").strip()
     if not pg_dsn:
-        raise ValueError("未配置 THOTH_PG_DSN，请提供 PostgreSQL 连接字符串。")
-
-    operator = os.getenv("THOTH_OPERATOR", "").strip() or "THOTH_MCP"
-    # 在配置加载时报告可读的错误，避免每条写入都触发 VARCHAR(128) 超长错误。
+        raise ValueError("未配置 THOTH_PG_DSN，请在环境文件或进程变量中提供连接字符串。")
+    operator = (values.get("THOTH_OPERATOR") or "").strip() or "THOTH_MCP"
     if len(operator) > 128:
         raise ValueError("THOTH_OPERATOR 不能超过 128 个字符。")
-    return Settings(pg_dsn=pg_dsn, operator=operator)
+    return Settings(pg_dsn=pg_dsn, operator=operator, environment=selected)
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """首次调用时加载配置，后续复用同一对象；配置错误由调用方处理。
-
-    运行中修改环境变量不会自动刷新缓存；重启进程后重新加载。
-    测试需要切换配置时，可调用 get_settings.cache_clear() 清理缓存。
-    """
+    """缓存当前进程的业务配置；修改环境或文件后需重启，测试可清空缓存。"""
     return load_settings()
