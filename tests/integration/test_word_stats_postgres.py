@@ -27,8 +27,8 @@ def call_stats(service, name, words, username="tester"):
 
 
 def _load_test_dsn(root):
-    """固定加载 test 配置；配置缺失或错误时明确失败，不回退其他环境。"""
-    return load_settings("test", root=root).pg_dsn
+    """只读取显式指定的 .env.test；配置缺失时不回退正式配置。"""
+    return load_settings(config_file=root / ".env.test").pg_dsn
 
 
 @contextmanager
@@ -72,7 +72,7 @@ def database(monkeypatch):
                     yield connection
 
             for service in (count_word_usage_service, count_word_miss_service, reset_word_miss_service):
-                monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(operator="integration"))
+                monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace())
                 monkeypatch.setattr(service, "open_connection", connect)
             yield connect
         finally:
@@ -138,7 +138,7 @@ def test_reset_and_count_follow_row_lock_order(database, first):
                 mapper.reset(entity)
                 future = executor.submit(count_miss)
             else:
-                mapper.increment_many([entity], user_id=1, operator="test")
+                mapper.increment_many([entity], user_id=1)
                 future = executor.submit(reset)
         result = future.result(timeout=15)
     assert result["counts"] == {"miss_count": 1 if first == "reset" else 0}
@@ -164,10 +164,10 @@ def test_status_change_during_batch_is_not_reported_success(database, monkeypatc
     method = "initialize_many" if stage == "before_initialize" else "increment_many"
     original = getattr(WordMissTblMapper, method)
 
-    def change_status(self, entities, *, user_id, operator):
+    def change_status(self, entities, *, user_id):
         with database() as connection:
             connection.execute("UPDATE word_tbl SET status_code='D' WHERE word='a'")
-        return original(self, entities, user_id=user_id, operator=operator)
+        return original(self, entities, user_id=user_id)
 
     monkeypatch.setattr(WordMissTblMapper, method, change_status)
     row = count_miss()
@@ -181,5 +181,5 @@ def test_initialization_preserves_existing_audit(database):
     assert count_miss()["status"] == "updated"
     with database() as connection:
         before = connection.execute("SELECT * FROM word_miss_tbl").fetchone()
-        WordMissTblMapper(connection).initialize_many([WordMissEntity(user_id=1, word_id=before[1])], user_id=1, operator="different")
+        WordMissTblMapper(connection).initialize_many([WordMissEntity(user_id=1, word_id=before[1])], user_id=1)
         assert connection.execute("SELECT * FROM word_miss_tbl").fetchone() == before

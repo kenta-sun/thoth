@@ -132,7 +132,7 @@ def test_find_existing_words_with_empty_input_does_not_query():
 
 def test_absent_word_is_created_with_all_fields_and_database_generated_values(complete_entity):
     connection = ScriptedConnection(database_row())
-    result = WordTblMapper(connection, operator="test-operator").insert(complete_entity)
+    result = WordTblMapper(connection).insert(complete_entity)
 
     assert isinstance(result, WordEntity)
     assert result is not complete_entity
@@ -144,8 +144,9 @@ def test_absent_word_is_created_with_all_fields_and_database_generated_values(co
     query, params = connection.statements[-1]
     assert "INSERT INTO word_tbl" in query
     assert "ON CONFLICT (word) DO NOTHING" in query
+    assert query.count("CURRENT_USER") == 2
     assert params == {
-        "word": "食べる", "operator": "test-operator",
+        "word": "食べる",
         "common_form": "食べる", "hiragana": "たべる", "meaning": "吃",
     }
     assert query.split("VALUES", 1)[0].strip() == (
@@ -172,7 +173,7 @@ def test_existing_update_only_changes_supplied_fields_and_returns_database_entit
     assert "COALESCE(%(common_form)s, common_form)" in query
     assert "COALESCE(%(hiragana)s, hiragana)" in query
     assert "updated_at = CURRENT_TIMESTAMP" in query
-    assert "updated_by = %(operator)s" in query
+    assert "updated_by = CURRENT_USER" in query
     assert "status_code" not in query.split("RETURNING", 1)[0]
     assert result_columns(query) == WORD_COLUMNS
 

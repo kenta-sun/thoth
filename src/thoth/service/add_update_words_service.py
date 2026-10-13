@@ -37,7 +37,7 @@ def add_update_words(words: list[WordWriteCommand], username: str) -> WordBatchR
     settings = get_settings()
     with open_connection(settings) as connection:
         require_user(connection, username)
-        return save_word_batch(items, connection, operator=settings.operator)
+        return save_word_batch(items, connection)
 
 
 def prepare_word_inputs(words: list[WordWriteCommand]) -> list[WordInput]:
@@ -228,7 +228,6 @@ def _save_word_item(
     *,
     index: int,
     exists: bool,
-    operator: str,
 ) -> WordItemResult:
     """以单个单词为事务边界保存信息和完整标签列表，提交后才返回成功。
 
@@ -243,7 +242,6 @@ def _save_word_item(
         connection: 用于开启本项事务的数据库连接。
         index: 原输入数组中的零基下标。
         exists: 批量查询时单词是否存在；保存时仍处理并发变化。
-        operator: 写入标签关联审计字段的操作者。
 
     Returns:
         提交后的保存结果；标签不存在、必填字段缺失或数据库错误均在回滚后
@@ -271,7 +269,6 @@ def _save_word_item(
                 word_tag_mapper.insert_many([
                     WordTagEntity(
                         word_id=word_id, tag_code=code,
-                        created_by=operator, updated_by=operator,
                     )
                     for code in request.tags
                 ])
@@ -297,14 +294,12 @@ def _save_word_item(
 
 def save_word_batch(
     items: list[WordInput], connection: psycopg.Connection,
-    *, operator: str = "THOTH_MCP",
 ) -> WordBatchResult:
     """批量查询有效词，再在同一连接上逐项开启独立事务保存单词及标签。
 
     Args:
         items: prepare_word_inputs 返回的业务输入列表；空列表或全部无效时不访问数据库。
         connection: 已启用 autocommit 且没有外层事务的连接，保证每项独立提交。
-        operator: 写入单词表和关联表审计字段的操作者。
 
     Returns:
         与输入等长且顺序一致的批次结果，单项失败保留在结果中并继续下一项。
@@ -312,7 +307,7 @@ def save_word_batch(
     Raises:
         DatabaseError: 批量查重失败，此时尚未开始写入。
     """
-    repository = WordTblMapper(connection, operator=operator)
+    repository = WordTblMapper(connection)
     tag_mapper = TagTblMapper(connection)
     word_tag_mapper = WordTagTblMapper(connection)
     # 输入错误和批内重复先转为结果，仅将可保存的单词交给 DAO 批量查重。
@@ -331,7 +326,7 @@ def save_word_batch(
     return WordBatchResult(results=[
         item if isinstance(item, WordItemResult) else _save_word_item(
             item, repository, tag_mapper, word_tag_mapper, connection,
-            index=index, exists=item.entity.word in existing_words, operator=operator,
+            index=index, exists=item.entity.word in existing_words,
         )
         for index, item in enumerate(prepared)
     ])

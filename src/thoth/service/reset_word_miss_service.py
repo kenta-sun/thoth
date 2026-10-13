@@ -32,17 +32,17 @@ def reset_word_miss(words: list[str], username: str) -> list[StatsResult]:
     with open_connection(settings) as connection:
         user = require_user(connection, username)
         executed = [
-            _reset_item(item, connection, settings.operator, user.id)
+            _reset_item(item, connection, user.id)
             for item in preprocessed.pending_items
         ]
         return merge_stats_results(preprocessed, executed)
 
 
 def _reset_item(item: WordListItem, connection: psycopg.Connection,
-                operator: str, user_id: int) -> StatsResult:
+                user_id: int) -> StatsResult:
     """用独立事务锁定单词及计数后清零，提交后返回；数据库失败回滚并脱敏。
 
-    user_id 限定统计归属；connection 必须无外层事务；item.index 为原始输入位置，operator 只在实际更新时写入。
+    user_id 限定统计归属；connection 必须无外层事务；item.index 为原始输入位置；仅实际更新时由数据库记录修改账号。
     """
     word = item.original_value
     index = item.index
@@ -62,7 +62,7 @@ def _reset_item(item: WordListItem, connection: psycopg.Connection,
                 elif record.miss_count == 0:
                     result = StatsResult(index, word, "skipped", "错误计数已为零。", miss_count=0)
                 else:
-                    updated = mapper.reset(WordMissEntity(user_id=user_id, word_id=entity.id, updated_by=operator))
+                    updated = mapper.reset(WordMissEntity(user_id=user_id, word_id=entity.id))
                     if updated is None or updated.miss_count != 0:
                         raise DatabaseError("清零未返回有效记录。")
                     result = StatsResult(index, word, "updated", miss_count=updated.miss_count)

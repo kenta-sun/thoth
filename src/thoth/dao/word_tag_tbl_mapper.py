@@ -25,14 +25,13 @@ class WordTagTblMapper:
         """在当前事务内批量插入关联实体，空集合不执行 SQL，任何失败均向上传递。"""
         if not entities:
             return
-        # 时间使用数据库默认值；不忽略主键或外键冲突，以便 Service 回滚整个单词。
+        # 审计账号使用 CURRENT_USER，时间使用数据库默认值；不忽略主键或外键冲突，以便 Service 回滚整个单词。
         sql = """
         INSERT INTO word_tag_tbl (word_id, tag_code, created_by, updated_by)
-        VALUES (%(word_id)s, %(tag_code)s, %(created_by)s, %(updated_by)s)
+        VALUES (%(word_id)s, %(tag_code)s, CURRENT_USER, CURRENT_USER)
         """
         with self._connection.cursor() as cursor:
             cursor.executemany(sql, [
-                {"word_id": entity.word_id, "tag_code": entity.tag_code,
-                 "created_by": entity.created_by, "updated_by": entity.updated_by}
+                {"word_id": entity.word_id, "tag_code": entity.tag_code}
                 for entity in entities
             ])

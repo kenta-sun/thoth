@@ -170,12 +170,12 @@ def test_tags_are_deduplicated_without_changing_case():
 
 def test_create_preserves_entity_and_writes_tags_in_one_transaction(repository):
     requests = prepare_inputs([complete_word()])
-    result = save_word_batch(requests, repository.connection, operator="tester")
+    result = save_word_batch(requests, repository.connection)
     assert repository.insert.call_args.args[0] is requests[0].entity
     repository.find_existing_words.assert_called_once_with(["食べる"])
     repository.links_mapper.delete_by_word_id.assert_called_once_with(7)
     assert repository.links_mapper.insert_many.call_args.args[0] == [
-        WordTagEntity(word_id=7, tag_code=code, created_by="tester", updated_by="tester")
+        WordTagEntity(word_id=7, tag_code=code)
         for code in ("v", "v2")
     ]
     assert serialize_word_batch(result) == {"results": [{"index": 0, "word": "食べる", "status": "created"}]}

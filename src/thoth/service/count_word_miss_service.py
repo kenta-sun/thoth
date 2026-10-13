@@ -52,8 +52,8 @@ def count_word_miss(words: list[str], username: str) -> list[StatsResult]:
             entities = [WordMissEntity(user_id=user.id, word_id=record.id) for record in pending.values()]
             try:
                 # 两条独立提交的批量写入；只有最终 RETURNING 中的记录算成功。
-                mapper.initialize_many(entities, user_id=user.id, operator=settings.operator)
-                updated = mapper.increment_many(entities, user_id=user.id, operator=settings.operator)
+                mapper.initialize_many(entities, user_id=user.id)
+                updated = mapper.increment_many(entities, user_id=user.id)
                 if any(record.miss_count is None for record in updated):
                     raise DatabaseError("批量计数未返回有效数值。")
                 by_id = {record.word_id: record for record in updated}

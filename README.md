@@ -4,51 +4,38 @@
 
 服务不调用大模型、不生成向量，也不向 AI 提供任意 SQL 或表结构修改接口。运行依赖仅保留 FastMCP、Pydantic、dotenv 和 PostgreSQL 驱动。
 
-## 配置与启动
+## Docker 配置与启动
 
-使用 Python 3.11 或更高版本，以及项目现有的虚拟环境。源码开发默认从项目根目录读取配置；
-Docker 部署时，通过进程变量 `THOTH_CONFIG_DIR` 指定现有配置目录的绝对路径，不依赖启动时的工作目录。
-完整的 Docker 构建、生产配置填写和「日本語」项目 HTTP 接入步骤见 [正式部署操作手册](doc/deployment.md)。
+正式服务由 Docker Compose 运行，通过 Streamable HTTP 提供 MCP，地址为 `http://127.0.0.1:8000/mcp`。
+完整步骤见 [Docker 部署手册](doc/deployment.md)，每条命令单独列出。
 
-首次配置时复制 `.env.example` 为 `.env`，复制需要使用的 `.env.dev.example`、`.env.test.example` 或 `.env.prd.example` 为对应环境文件，并填写真实数据库凭证。Docker 部署使用项目根目录的 `.env.prd`，只读挂载进容器；真实 `.env` 和 `.env.*` 文件均不提交 Git。
+只需手动填写项目根目录的 `.env.prd`，内容参照 `.env.prd.example`：
 
-| 文件 | 用途 | 数据库示例 |
-| --- | --- | --- |
-| `.env` | 通过 `THOTH_ENV=dev` 选择默认环境，并存放公共配置；禁止放连接串 | — |
-| `.env.dev` | 开发版 Thoth 配置 | `thoth_dev` |
-| `.env.test` | 集成测试配置 | `thoth_test` |
-| `.env.prd` | 正式部署配置 | `thoth_prd` |
-
-| 配置项 | 说明 |
-| --- | --- |
-| `THOTH_CONFIG_DIR` | 可选，仅从进程变量读取。设置时必须是现有目录的绝对路径；空值、相对路径和不存在的目录报错，不回退源码目录。Compose 已设为容器内的 `/config`。 |
-| `THOTH_ENV` | 必填，仅允许 `dev`、`test`、`prd`；进程变量优先于公共 `.env`。 |
-| `THOTH_PG_DSN` | 必填，存放在选中的环境文件或进程变量中。三个环境使用相同配置名。 |
-| `THOTH_OPERATOR` | 可选，写入审计字段的操作者标识，默认 `THOTH_MCP`。 |
-
-配置值优先级为进程变量 > 选定环境文件 > 公共 `.env`。每次只加载一个环境文件，不修改全局进程变量，也不展开 `${VAR}`。环境名非法、环境文件缺失或连接串为空时直接报错，不回退其他环境。即使使用进程连接串，对应环境文件也必须存在。配置首次使用后缓存，修改配置需重启服务。
-
-内部调用 `load_settings(root=...)` 时，显式目录优先于 `THOTH_CONFIG_DIR`，用于测试等需要隔离配置的场景。
-`THOTH_CONFIG_DIR` 不写进 `.env`，因为读取 `.env` 前就需要确定它的位置。
-
-运行服务的目标数据库完全由 `THOTH_PG_DSN` 指定，代码不限制数据库名称。`THOTH_ENV` 只选择配置文件，不绑定库名。请通过各环境的连接配置及数据库账号权限隔离开发与正式数据。集成测试另有独立的测试库保护。
-
-源码开发时，在项目根目录启动 HTTP 服务（默认 `127.0.0.1:8000`）：
-
-```shell
-.venv/bin/python -m thoth.mcp_server
+```dotenv
+THOTH_PG_DSN=postgresql://YOUR_USER:YOUR_PASSWORD@host.docker.internal:12001/YOUR_DATABASE
 ```
 
-Docker 正式运行由 Compose 设置 `THOTH_ENV=prd`；HTTP 客户端只填写 URL，不负责启动 Python 进程或传递数据库配置。
-监听地址和端口可通过进程变量 `FASTMCP_HOST`、`FASTMCP_PORT` 设置；容器内部监听 `0.0.0.0:8000`，Compose 仅发布到宿主机 `127.0.0.1:8000`。
+`THOTH_PG_DSN` 必填，数据库名称由连接串决定。创建人和修改人由 SQL 的 `CURRENT_USER` 记录当前数据库账号。
+生产配置在构建时复制到镜像的 `/app/.env.prd`，启动时直接读取；不挂载外部配置、不切换环境、不读取公共 `.env` 或 `.env.dev`。
+旧的 `THOTH_ENV`、`THOTH_CONFIG_DIR` 已不再使用。旧配置文件可以保留作参考，不参与服务运行，也不进入镜像。
+进程变量可覆盖文件值；文件内容不展开 `${VAR}`，不修改进程变量。配置缺失或无效时服务启动失败，不连接数据库。
+修改源码或 `.env.prd` 后，需要重新构建镜像并重建容器。
 
-迁移旧配置时，将公共 `.env` 中的 `THOTH_PG_DSN` 移入 `.env.dev`，将 `THOTH_TEST_PG_DSN` 移入 `.env.test` 并改名为 `THOTH_PG_DSN`；旧测试变量不再读取。
+构建镜像：
 
-运行不需要 OpenAI API Key。服务使用已有的单词表、标签表及关联表，不自动建表、修改表结构或调整数据库账号权限。
+```shell
+docker compose build
+```
 
-MCP 使用 Streamable HTTP，端点为 `http://127.0.0.1:8000/mcp`。六个业务工具的参数和响应保持不变。
-服务启用 Host/Origin 检查，当前部署面向本机客户端，没有配置远程用户认证；不要直接公开到局域网或公网。
-相关命令见 [Docker 部署手册](doc/deployment.md)。
+启动服务：
+
+```shell
+docker compose up -d
+```
+
+Dockerfile 设置容器内监听 `0.0.0.0:8000`，Compose 仅发布宿主机 `127.0.0.1:8000`。
+服务启用本机 Host/Origin 检查，没有配置远程用户认证；当前配置用于本机访问。
+真实配置不提交 Git。服务不需要 OpenAI API Key，不自动建表、迁移数据库或修改数据库权限。
 
 ## 用户与统计归属
 
@@ -77,7 +64,7 @@ MCP 使用 Streamable HTTP，端点为 `http://127.0.0.1:8000/mcp`。六个业�
 单词、释义、读音和标签全员共享；保存工具校验用户后修改共享词库。
 两张统计表以 `(user_id, word_id)` 为联合主键；计数、清零、统计筛选和排序只针对指定用户。
 当前用户没有统计记录时按零处理，仍能查询共享词库，查询不会初始化统计。
-`THOTH_OPERATOR` 继续用于审计字段，不代替统计归属用户。
+审计字段记录当前数据库账号，与词库统计归属用户名分开。
 
 统计调用示例（用户名需要预先添加）：
 
@@ -306,17 +293,15 @@ JSON 参数 → FastMCP 校验 → 请求模型 → 工具入口映射 → 内�
 
 # 常用命令
 
-以下命令在项目根目录执行，使用已安装项目依赖的 `.venv`。
+以下命令在项目根目录执行。正式运行使用 Docker，本机 `.venv` 仅用于开发测试。
 
 ## 启动 MCP
 
-先按上文准备 `.env` 和对应环境文件。默认选择 `dev`，正式部署显式指定 `THOTH_ENV=prd`；连接串应指向你为该环境准备的数据库。
-
 ```shell
-.venv/bin/python -m thoth.mcp_server
+docker compose up -d
 ```
 
-服务通过 Streamable HTTP 提供六个工具。日语项目的 `.codex/config.toml` 使用以下配置：
+日语项目的 `.codex/config.toml` 使用以下配置：
 
 ```toml
 [mcp_servers.thoth]
@@ -334,7 +319,7 @@ url = "http://127.0.0.1:8000/mcp"
 ## PostgreSQL 集成测试
 
 单元测试不需要数据库。真实查询、并发、事务回滚和审计验证使用专用测试库：
-测试入口固定调用配置加载器选择 `test`，无视公共 `.env` 和进程 `THOTH_ENV` 的日常环境选择。
+测试入口显式读取 `.env.test`，不会加载服务使用的 `.env.prd`。
 在 `.env.test` 中设置 `THOTH_PG_DSN` 指向 `thoth_test`，执行：
 
 ```shell

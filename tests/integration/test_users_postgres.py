@@ -42,7 +42,7 @@ def rebuilt(monkeypatch):
 
             for service in (query_users_service, query_words_service, add_update_words_service,
                             count_word_usage_service, count_word_miss_service, reset_word_miss_service):
-                monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(operator="integration"))
+                monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace())
                 monkeypatch.setattr(service, "open_connection", connect)
             yield connect
         finally:

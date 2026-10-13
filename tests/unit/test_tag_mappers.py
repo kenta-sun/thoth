@@ -49,7 +49,8 @@ def test_association_delete_and_insert_are_scoped_and_parameterized():
     )
     for (query, params), code in zip(connection.statements[1:], ["v", "v2"], strict=True):
         assert "ON CONFLICT" not in query
-        assert params == {"word_id": 9, "tag_code": code, "created_by": "tester", "updated_by": "tester"}
+        assert query.count("CURRENT_USER") == 2
+        assert params == {"word_id": 9, "tag_code": code}
     assert connection.commits == connection.rollbacks == 0
 
 
@@ -87,7 +88,7 @@ def test_json_through_all_mappers_preserves_update_and_replaces_tags():
     assert connection.statements[8][1] == {"word_id": 7}
     assert connection.statements[7][1] == {
         "word": "飲む", "common_form": None, "hiragana": None,
-        "meaning": "喝", "operator": "THOTH_MCP",
+        "meaning": "喝",
     }
 
 

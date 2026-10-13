@@ -46,7 +46,7 @@ def install_backend(monkeypatch, service, *responses):
     def connect(settings):
         yield connection
 
-    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(operator="tester"))
+    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace())
     monkeypatch.setattr(service, "open_connection", connect)
     return connection
 
@@ -71,6 +71,9 @@ def test_batch_of_100_uses_four_queries_and_no_explicit_transaction(monkeypatch,
     assert f"SET {kind}_count = {kind}_count + 1" in update
     assert "status_code <> 'D'" in update and "RETURNING" in update
     assert "created_by =" not in update
+    assert initialize.count("CURRENT_USER") == 2
+    assert "updated_by = CURRENT_USER" in update
+    assert all("operator" not in params for _, params in conn.statements)
     other = "miss" if kind == "usage" else "usage"
     assert all(f"word_{other}_tbl" not in query for query, _ in conn.statements)
 
@@ -185,6 +188,8 @@ def test_reset_missing_zero_and_nonzero(monkeypatch, existing, expected, status)
     assert all("INSERT" not in sql and "word_usage_tbl" not in sql for sql, _ in conn.statements)
     if existing:
         assert "miss_count <> 0" in conn.statements[-1][0]
+        assert "updated_by = CURRENT_USER" in conn.statements[-1][0]
+        assert "updated_by" not in conn.statements[-1][1]
     assert conn.commits == 1
 
 

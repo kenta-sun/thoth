@@ -57,10 +57,9 @@ def _query_row_factory(cursor):
 class WordTblMapper:
     """封装 word_tbl 的参数化 SQL 调用，不提交事务或判断业务操作。"""
 
-    def __init__(self, connection: psycopg.Connection, *, operator: str = "THOTH_MCP") -> None:
-        """复用 Service 的连接，使用 operator 填充写入审计字段。"""
+    def __init__(self, connection: psycopg.Connection) -> None:
+        """复用 Service 的连接，审计字段由 SQL 使用 CURRENT_USER 填充。"""
         self._connection = connection
-        self._operator = operator
 
     def query_words(self, request: QueryRequest, *, user_id: int) -> list[QueryWordResult]:
         """执行构建器生成的只读查询；不加行锁、不提交事务，空结果返回空列表。
@@ -92,12 +91,12 @@ class WordTblMapper:
 
     def insert(self, entity: WordEntity) -> WordEntity | None:
         """在调用方事务内新增；返回含生成 ID 和状态的业务实体，word 冲突时返回 None；其他驱动异常向上传递。"""
-        # 仅写业务字段和操作者，id、状态和时间交给数据库默认值生成。
+        # 写入业务字段，审计账号使用 CURRENT_USER，id、状态和时间交给数据库默认值生成。
         # word 的唯一约束配合 ON CONFLICT 避免并发新增时覆盖原记录；
         # RETURNING 返回实际新增的业务字段，发生冲突而未写入时不返回记录。
         sql = """
         INSERT INTO word_tbl (word, common_form, hiragana, meaning, created_by, updated_by)
-        VALUES (%(word)s, %(common_form)s, %(hiragana)s, %(meaning)s, %(operator)s, %(operator)s)
+        VALUES (%(word)s, %(common_form)s, %(hiragana)s, %(meaning)s, CURRENT_USER, CURRENT_USER)
         ON CONFLICT (word) DO NOTHING
         RETURNING id, word, common_form, hiragana, meaning, status_code
         """
@@ -130,7 +129,7 @@ class WordTblMapper:
             hiragana = COALESCE(%(hiragana)s, hiragana),
             meaning = COALESCE(%(meaning)s, meaning),
             updated_at = CURRENT_TIMESTAMP,
-            updated_by = %(operator)s
+            updated_by = CURRENT_USER
         WHERE word = %(word)s
         RETURNING id, word, common_form, hiragana, meaning, status_code
         """
@@ -139,10 +138,9 @@ class WordTblMapper:
             return cursor.fetchone()
 
     def _parameters(self, entity: WordEntity) -> dict[str, str | None]:
-        """在 SQL 绑定处读取业务字段和操作者，保留 None，不绑定 ID、状态及时间。"""
+        """在 SQL 绑定处读取业务字段，保留 None，不绑定 ID、状态及时间。"""
         return {
             "word": entity.word,
-            "operator": self._operator,
             "common_form": entity.common_form,
             "hiragana": entity.hiragana,
             "meaning": entity.meaning,

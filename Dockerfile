@@ -13,12 +13,12 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app/src \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    THOTH_CONFIG_DIR=/config \
     FASTMCP_HOST=0.0.0.0 \
     FASTMCP_PORT=8000
 COPY --from=dependencies /app/.venv /app/.venv
 COPY src/thoth /app/src/thoth
-RUN mkdir /config
+# 生产配置随镜像打包，修改配置后重新构建镜像。
+COPY .env.prd /app/.env.prd
 EXPOSE 8000
 # 仅检查监听进程存活，不读取配置或查询数据库。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

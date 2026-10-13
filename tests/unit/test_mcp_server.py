@@ -19,6 +19,7 @@ from thoth.entity import WordEntity, TagEntity
 
 def test_main_starts_http_with_local_host_protection(monkeypatch):
     """入口使用 HTTP 及本机 Host/Origin 保护，不启动 stdio 服务。"""
+    monkeypatch.setattr(mcp_server, "get_settings", Mock())
     run = Mock()
     monkeypatch.setattr(mcp_server.mcp, "run", run)
     mcp_server.main()
@@ -30,11 +31,21 @@ def test_main_starts_http_with_local_host_protection(monkeypatch):
     )
 
 
+def test_main_rejects_missing_configuration_before_listening(monkeypatch):
+    """配置校验失败时不开放 HTTP 端口。"""
+    monkeypatch.setattr(mcp_server, "get_settings", Mock(side_effect=ValueError("缺少配置")))
+    run = Mock()
+    monkeypatch.setattr(mcp_server.mcp, "run", run)
+    with pytest.raises(ValueError, match="缺少配置"):
+        mcp_server.main()
+    run.assert_not_called()
+
+
 @pytest.fixture
 def backend(monkeypatch):
     """替换配置、连接和 Mapper，保留真实 Service 流程以验证 MCP 协议结果。"""
     monkeypatch.setattr(add_update_words_service, "require_user", Mock(return_value=SimpleNamespace(id=1)))
-    settings = SimpleNamespace(operator="test-operator")
+    settings = SimpleNamespace()
     get_settings = Mock(return_value=settings)
     connection = MagicMock()
     connection_context = MagicMock()
@@ -138,7 +149,7 @@ def test_tool_returns_structured_per_word_results(backend):
     }
     backend.get_settings.assert_called_once_with()
     backend.open_connection.assert_called_once_with(backend.settings)
-    backend.repository_factory.assert_called_once_with(backend.connection, operator="test-operator")
+    backend.repository_factory.assert_called_once_with(backend.connection)
     backend.repository.find_existing_words.assert_called_once_with(["食べる"])
     backend.repository.insert.assert_called_once_with(
         WordEntity(word="食べる", common_form="食べる", hiragana="たべる", meaning="吃"),

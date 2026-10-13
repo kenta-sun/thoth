@@ -39,7 +39,7 @@ def install(monkeypatch, service, response):
         """提供只含用户查询响应的连接，额外业务 SQL 会导致测试失败。"""
         yield connection
 
-    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(operator="test"))
+    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace())
     monkeypatch.setattr(service, "open_connection", connect)
     return connection
 

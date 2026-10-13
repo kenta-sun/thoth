@@ -15,7 +15,7 @@ def test_test_entry_explicitly_selects_test(monkeypatch):
     loader = Mock(return_value=settings)
     monkeypatch.setattr(integration, "load_settings", loader)
     assert integration._load_test_dsn(Path("project")) == "test-dsn"
-    loader.assert_called_once_with("test", root=Path("project"))
+    loader.assert_called_once_with(config_file=Path("project/.env.test"))
 
 
 @pytest.mark.parametrize("database_name", ["thoth_memory", "postgres"])

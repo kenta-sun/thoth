@@ -21,6 +21,6 @@ class WordEntity:
     status_code: str | None = None  # 关联 word_sts_tbl.code；A=正在使用，D=被删除，表默认 A。
     created_at: datetime | None = None  # 带时区的创建时间；表默认值为数据库当前时间。
     updated_at: datetime | None = None  # 带时区的最后更新时间；插入默认当前时间，更新由 SQL 维护。
-    created_by: str | None = None  # 创建者标识；表默认当前数据库角色，单词 DAO 写入配置的操作者。
-    updated_by: str | None = None  # 最后修改者标识；表默认当前数据库角色，单词 DAO 写入当前操作者。
+    created_by: str | None = None  # 创建者标识；由数据库 CURRENT_USER 记录。
+    updated_by: str | None = None  # 最后修改者标识；实际更新时由数据库 CURRENT_USER 记录。
 

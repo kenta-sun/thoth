@@ -16,12 +16,10 @@ TEST_DSN = "postgresql://test_user:test_password@invalid.test/test_words"
 def isolated_configuration(monkeypatch, tmp_path):
     """屏蔽本地配置读取，隔离进程环境，并在每个测试前后清空配置缓存。"""
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
-    (tmp_path / ".env").write_text("THOTH_ENV=dev\n")
-    (tmp_path / ".env.dev").write_text("")
+    (tmp_path / ".env.prd").write_text("")
     monkeypatch.delenv("THOTH_CONFIG_DIR", raising=False)
     monkeypatch.delenv("THOTH_ENV", raising=False)
     monkeypatch.setenv("THOTH_PG_DSN", TEST_DSN)
-    monkeypatch.delenv("THOTH_OPERATOR", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     config.get_settings.cache_clear()
     yield
@@ -32,7 +30,6 @@ def test_settings_need_no_openai_configuration():
     settings = config.load_settings()
 
     assert settings.pg_dsn == TEST_DSN
-    assert settings.operator == "THOTH_MCP"
 
 
 @pytest.mark.parametrize("dsn", [None, "", " \t\n"])
@@ -46,35 +43,12 @@ def test_missing_or_empty_database_dsn_is_explicit_error(monkeypatch, dsn):
         config.load_settings()
 
 
-@pytest.mark.parametrize("operator", ["", " \t\n"])
-def test_empty_operator_uses_default(monkeypatch, operator):
-    monkeypatch.setenv("THOTH_OPERATOR", operator)
-
-    assert config.load_settings().operator == "THOTH_MCP"
-
-
 def test_configuration_trims_outer_whitespace(monkeypatch):
     monkeypatch.setenv("THOTH_PG_DSN", f" {TEST_DSN} \n")
-    monkeypatch.setenv("THOTH_OPERATOR", "  vocabulary_writer \n")
 
     settings = config.load_settings()
 
     assert settings.pg_dsn == TEST_DSN
-    assert settings.operator == "vocabulary_writer"
-
-
-def test_operator_accepts_128_characters(monkeypatch):
-    operator = "词" * 128
-    monkeypatch.setenv("THOTH_OPERATOR", operator)
-
-    assert config.load_settings().operator == operator
-
-
-def test_operator_rejects_more_than_128_characters(monkeypatch):
-    monkeypatch.setenv("THOTH_OPERATOR", "词" * 129)
-
-    with pytest.raises(ValueError, match="THOTH_OPERATOR 不能超过 128 个字符"):
-        config.load_settings()
 
 
 def test_settings_repr_omits_connection_credentials():
@@ -83,7 +57,6 @@ def test_settings_repr_omits_connection_credentials():
     assert TEST_DSN not in displayed
     assert "test_password" not in displayed
     assert "pg_dsn" not in displayed
-    assert "THOTH_MCP" in displayed
 
 
 @pytest.fixture
@@ -132,12 +105,11 @@ def test_connection_error_does_not_echo_dsn_or_credentials(fake_connect):
     assert "test_password" not in message
 
 
-@pytest.mark.parametrize("environment", ["dev", "test", "prd"])
 @pytest.mark.parametrize("database", ["japanese_words", "custom_live"])
-def test_environment_accepts_configured_database(fake_connect, environment, database):
-    """各环境直接使用连接配置中的自定义库名，不执行库名探测 SQL。"""
+def test_connection_accepts_configured_database(fake_connect, database):
+    """直接使用连接配置中的自定义库名，不执行库名探测 SQL。"""
     dsn = f"postgresql://test_user:test_password@invalid.test/{database}"
-    with connection_module.open_connection(config.Settings(dsn, environment=environment)) as opened:
+    with connection_module.open_connection(config.Settings(dsn)) as opened:
         assert opened is fake_connect.return_value
     fake_connect.assert_called_once_with(dsn, autocommit=True, connect_timeout=5)
     opened.execute.assert_not_called()

@@ -7,8 +7,8 @@
 日本語项目 → HTTP /mcp → Docker 中的 Thoth → 已有 PostgreSQL
 ```
 
-源码直接复制进镜像，依赖由 `uv.lock` 固定。真实配置不进入构建上下文或镜像，启动时单独只读挂载。
-配置目录变量 `THOTH_CONFIG_DIR` 保留，用来告诉容器去 `/config` 读取配置；数据库名称由连接串决定。
+源码和项目根目录的 `.env.prd` 一起复制进镜像，依赖由 `uv.lock` 固定。运行时不需要配置文件挂载。
+程序固定读取镜像内的 `/app/.env.prd`，不再设置 `THOTH_ENV` 或 `THOTH_CONFIG_DIR`；数据库名称由连接串决定。
 
 每个 shell 代码块是一条完整命令，按顺序在同一个 macOS 终端窗口执行，报错时先停止处理。配置代码块是文件内容，不在终端执行。
 
@@ -32,7 +32,7 @@ docker info
 docker compose version
 ```
 
-后续所有 Compose 命令显式使用 `--env-file /dev/null`，避免 Compose 自动读取开发用的 `.env`。容器环境选择已在 `compose.yaml` 中明确设置为 `prd`。
+后续直接使用普通 Compose 命令。Compose 文件没有引用旧 `.env` 的业务变量，因此不需要额外的环境文件参数。
 
 ## 2. 手动准备生产配置
 
@@ -42,7 +42,7 @@ docker compose version
 /Users/ethan/Documents/IDE_Workspace/AI_agents/thoth/.env.prd
 ```
 
-把下面这一行粘贴到文件里，替换账号、密码和数据库名称。已有配置时手动编辑原文件，不要直接覆盖真实凭证。
+把下面这段内容粘贴到文件里，替换账号、密码和数据库名称。已有配置时手动编辑原文件，不要直接覆盖真实凭证。
 
 ```dotenv
 THOTH_PG_DSN=postgresql://YOUR_USER:YOUR_PASSWORD@host.docker.internal:12001/YOUR_DATABASE
@@ -52,7 +52,8 @@ THOTH_PG_DSN=postgresql://YOUR_USER:YOUR_PASSWORD@host.docker.internal:12001/YOU
 若 PostgreSQL 在远程服务器，改用它真实的主机和端口。`YOUR_DATABASE` 填实际正式库名，例如 `thoth_prd`，程序不限制名称。
 用户名或密码中的 `@`、`:`、`/`、`#`、`%` 等 URL 特殊字符需要进行百分号编码；SSL 等参数按数据库要求填写。
 
-不需要创建额外的正式 `.env`：Compose 已设置 `THOTH_ENV=prd` 和 `THOTH_OPERATOR=THOTH_MCP`，只挂载 `.env.prd`。
+只需要这一个 `.env.prd` 文件，填写数据库连接串即可。审计字段自动记录当前数据库账号。
+Dockerfile 将文件复制到 `/app/.env.prd`；服务启动时校验配置，不读取旧 `.env` 或 `.env.dev`，不需要环境选择变量。
 真实文件不提交 Git。源码中的 `.env.prd.example` 是可参考的脱敏模板。
 
 ## 3. 确认数据库已准备好
@@ -100,31 +101,31 @@ ON CONFLICT (username) DO NOTHING;
 执行这条命令，根据 Dockerfile 构建 `thoth:local` 镜像。首次构建需要联网下载基础镜像和 Python 依赖：
 
 ```shell
-docker compose --env-file /dev/null build
+docker compose build
 ```
 
-Dockerfile 使用多阶段构建，只把运行依赖和源码放入最终镜像；不会安装 OpenAI SDK、pgvector 或 pytest。
-`.dockerignore` 仅放行源码及构建元数据，排除真实配置、Git、本机虚拟环境、旧安装包和敏感目录。
-这一步不读取生产配置内容，也不连接数据库。
+Dockerfile 使用多阶段构建，把运行依赖、源码和 `.env.prd` 放入最终镜像；不会安装 OpenAI SDK、pgvector 或 pytest。
+`.dockerignore` 放行源码、构建元数据及根目录的 `.env.prd`，仍排除开发和测试配置、Git、本机虚拟环境、旧安装包和敏感目录。
+这一步由 Docker 读取并复制生产配置，不连接数据库。
 
 ## 5. 启动容器并检查状态
 
-后台启动服务，终端退出后服务仍运行；缺少 `.env.prd` 文件时启动会报错：
+后台启动服务，终端退出后服务仍运行；生产配置已经包含在镜像中：
 
 ```shell
-docker compose --env-file /dev/null up -d
+docker compose up -d
 ```
 
 查看状态和端口映射：
 
 ```shell
-docker compose --env-file /dev/null ps
+docker compose ps
 ```
 
 查看最近的启动日志：
 
 ```shell
-docker compose --env-file /dev/null logs --tail=50 thoth
+docker compose logs --tail=50 thoth
 ```
 
 容器监听 `0.0.0.0:8000`，宿主机仅发布 `127.0.0.1:8000`，没有配置远程用户认证，因此保持本机访问。
@@ -170,36 +171,36 @@ Codex 需信任该项目才能加载项目配置；保存后重启应用，在�
 
 ## 8. 更新、重启与停止
 
-修改代码后，重新构建镜像：
+修改代码或 `.env.prd` 后，先重新构建镜像：
 
 ```shell
-docker compose --env-file /dev/null build
+docker compose build
 ```
 
 使用新镜像重新创建服务：
 
 ```shell
-docker compose --env-file /dev/null up -d --force-recreate
+docker compose up -d --force-recreate
 ```
 
-只修改 `.env.prd` 后，也使用上面这条重新创建命令，让容器重新挂载文件并清除进程内的配置缓存，不需要重新构建镜像。
+修改 `.env.prd` 后也必须依次执行上面的构建和重新创建命令；仅重启容器仍然使用旧镜像里的配置。
 
 临时停止服务：
 
 ```shell
-docker compose --env-file /dev/null stop
+docker compose stop
 ```
 
 重新启动已停止的服务：
 
 ```shell
-docker compose --env-file /dev/null up -d
+docker compose up -d
 ```
 
 删除本项目的服务容器和 Compose 网络：
 
 ```shell
-docker compose --env-file /dev/null down
+docker compose down
 ```
 
 本 Compose 没有定义 PostgreSQL 服务或数据库数据卷，以上命令不会删除已有数据库或本地 `.env.prd`。
@@ -210,7 +211,7 @@ docker compose --env-file /dev/null down
 | --- | --- |
 | Docker 引擎连接失败 | 打开 Docker Desktop，等待引擎启动。 |
 | 宿主机 8000 端口占用 | 停止占用它的开发 HTTP 服务，或把 Compose 左侧端口改为 `127.0.0.1:8001:8000`，客户端 URL 同步改为 8001。 |
-| 挂载文件不存在 | 手动创建项目根目录的 `.env.prd`，确认不是 `.env.prd.txt`。 |
+| 构建提示 `.env.prd` 不存在 | 手动创建项目根目录的 `.env.prd`，确认不是 `.env.prd.txt`，再重新构建。 |
 | 数据库连接失败 | 检查使用的是 `host.docker.internal`、宿主机端口、正确账号密码和库名，并确认数据库可接受该连接。 |
 | 用户不存在 | 核对数据库中已有用户名，大小写和中文必须一致。 |
 | 工具没有出现 | 核对项目受信任、URL 为 `/mcp`、容器在运行，并清理旧的 stdio 配置后重启 Codex。 |

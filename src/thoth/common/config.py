@@ -1,8 +1,7 @@
-"""公共配置层：按运行环境合并配置，供业务服务和数据库连接层使用。
+"""公共配置层：读取指定配置文件和进程变量，供业务服务建立数据库连接。
 
-配置目录可由进程 THOTH_CONFIG_DIR 指定；配置来自公共 .env、选定环境文件及进程变量，
-不修改 os.environ。
-业务服务首次读取时缓存配置；集成测试显式选择 test，不跟随日常环境。
+Docker 服务固定读取镜像内的 .env.prd；集成测试显式指定 .env.test。
+不自动加载公共 .env，不按环境名称切换文件，也不修改进程变量。
 """
 
 from __future__ import annotations
@@ -14,68 +13,44 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-# 源码开发默认目录；容器通过 THOTH_CONFIG_DIR 读取挂载的配置。
+# 源码在容器内固定为 /app/src/thoth，配置随镜像复制到 /app/.env.prd。
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SUPPORTED_ENVIRONMENTS = frozenset({"dev", "test", "prd"})
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """承载选定环境的连接与审计配置，不在展示结果中暴露连接凭证。"""
+    """承载数据库连接配置，展示对象时隐藏连接凭证。"""
 
-    pg_dsn: str = field(repr=False)  # 当前环境的 PostgreSQL 连接串，可能含密码。
-    operator: str = "THOTH_MCP"  # 写入 created_by、updated_by 的操作者标识。
-    environment: str = "dev"  # 运行环境，仅允许 dev、test、prd。
+    pg_dsn: str = field(repr=False)  # PostgreSQL 连接串，包含实际库名及连接凭证。
 
 
-def load_settings(environment: str | None = None, *, root: Path | None = None) -> Settings:
-    """选择单个环境文件并合并配置，缺失配置时拒绝回退。
+def load_settings(*, config_file: Path | None = None) -> Settings:
+    """合并单个配置文件和进程变量，进程值优先。
 
     Args:
-        environment: 显式选择的环境；None 时按进程 THOTH_ENV、公共 .env 的顺序选择。
-            测试入口固定传 test，覆盖日常环境选择。
-        root: 显式配置目录，优先于进程变量；None 时使用 THOTH_CONFIG_DIR，
-            未设置该变量时使用源码项目根目录。
+        config_file: 明确指定的配置文件，必须存在；None 时只读取进程变量。
+            不展开文件内的 ${VAR}，避免改变密码中的字面字符。
 
     Returns:
-        不含全局环境变量副作用的配置；值优先级为进程、环境文件、公共文件。
+        校验后的数据库连接配置，不检查或限制数据库名称。
 
     Raises:
-        ValueError: 配置目录变量为空、不是绝对路径或不是现有目录，或环境非法、
-            环境文件缺失、连接串缺失、审计标识过长。
+        ValueError: 指定文件不存在、连接串缺失或为空。
     """
-    directory = root
-    if directory is None:
-        configured_directory = os.environ.get("THOTH_CONFIG_DIR")
-        if configured_directory is None:
-            directory = PROJECT_ROOT
-        else:
-            # 显式配置必须有效，不回退开发目录；绝对路径避免随客户端工作目录变化。
-            directory = Path(configured_directory)
-            if not configured_directory.strip() or not directory.is_absolute() or not directory.is_dir():
-                raise ValueError("THOTH_CONFIG_DIR 必须为现有目录的绝对路径。")
-    # 不插值，避免 dotenv 隐式读取进程变量或把其他环境的连接串带入。
-    common = dotenv_values(directory / ".env", interpolate=False)
-    selected = environment if environment is not None else os.environ.get("THOTH_ENV", common.get("THOTH_ENV"))
-    selected = (selected or "").strip()
-    if selected not in SUPPORTED_ENVIRONMENTS:
-        raise ValueError("THOTH_ENV 必须为 dev、test 或 prd，且不得为空。")
-    env_file = directory / f".env.{selected}"
-    if not env_file.is_file():
-        raise ValueError(f"缺少环境配置文件 .env.{selected}。")
-    if "THOTH_PG_DSN" in common:
-        raise ValueError("公共 .env 不允许配置 THOTH_PG_DSN，请移入对应环境文件。")
-    values = {**common, **dotenv_values(env_file, interpolate=False), **os.environ}
+    values = {}
+    if config_file is not None:
+        if not config_file.is_file():
+            raise ValueError(f"缺少配置文件 {config_file.name}。")
+        values = dotenv_values(config_file, interpolate=False)
+    # 显式空进程值也覆盖文件值，避免配置错误时静默回退。
+    values = {**values, **os.environ}
     pg_dsn = (values.get("THOTH_PG_DSN") or "").strip()
     if not pg_dsn:
-        raise ValueError("未配置 THOTH_PG_DSN，请在环境文件或进程变量中提供连接字符串。")
-    operator = (values.get("THOTH_OPERATOR") or "").strip() or "THOTH_MCP"
-    if len(operator) > 128:
-        raise ValueError("THOTH_OPERATOR 不能超过 128 个字符。")
-    return Settings(pg_dsn=pg_dsn, operator=operator, environment=selected)
+        raise ValueError("未配置 THOTH_PG_DSN，请在配置文件或进程变量中提供连接字符串。")
+    return Settings(pg_dsn=pg_dsn)
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """缓存当前进程的业务配置；修改环境或文件后需重启，测试可清空缓存。"""
-    return load_settings()
+    """缓存镜像内 .env.prd 配置；修改文件后需重新构建并重建容器。"""
+    return load_settings(config_file=PROJECT_ROOT / ".env.prd")
