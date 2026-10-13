@@ -16,7 +16,14 @@ from thoth.common.config import load_settings
 from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.dao.word_miss_tbl_mapper import WordMissTblMapper
 from thoth.entity import WordMissEntity
+from thoth.tools.word_stats_mapping import to_stats_results
 from thoth.service import count_word_usage_service, count_word_miss_service, reset_word_miss_service
+
+
+def call_stats(service, name, words, username="tester"):
+    """调用真实统计服务并通过响应子模型检查对外结果。"""
+    return {"results": [row.model_dump(mode="json") for row in
+                        to_stats_results(getattr(service, name)(words, username))]}
 
 
 def _load_test_dsn(root):
@@ -78,12 +85,12 @@ CASES = [(count_word_usage_service, "count_word_usage", "usage"),
 
 def count_miss():
     """完整错误计数调用。"""
-    return count_word_miss_service.count_word_miss('["a"]', username="tester")["results"][0]
+    return call_stats(count_word_miss_service, "count_word_miss", ['a'], username="tester")["results"][0]
 
 
 def reset():
     """完整清零调用。"""
-    return reset_word_miss_service.reset_word_miss('["a"]', username="tester")["results"][0]
+    return call_stats(reset_word_miss_service, "reset_word_miss", ['a'], username="tester")["results"][0]
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
@@ -93,7 +100,7 @@ def test_overlapping_concurrent_batches(database, service, name, kind):
 
     def increment(index):
         barrier.wait(timeout=10)
-        return getattr(service, name)(json.dumps(["a", "b"] if index % 2 else ["b", "a"]), username="tester")["results"]
+        return call_stats(service, name, ["a", "b"] if index % 2 else ["b", "a"], username="tester")["results"]
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         batches = list(executor.map(increment, range(workers)))
@@ -110,7 +117,7 @@ def test_failed_batch_preserves_zero_initialization(database, service, name, kin
     field = sql.Identifier(kind + "_count")
     with database() as connection:
         connection.execute(sql.SQL("INSERT INTO {} (user_id, word_id, {}) SELECT 1, id, 9223372036854775807 FROM word_tbl WHERE word='a'").format(table, field))
-    rows = getattr(service, name)('["b","a",null,"missing"]', username="tester")["results"]
+    rows = call_stats(service, name, ['b', 'a', None, 'missing'], username="tester")["results"]
     assert [row["status"] for row in rows] == ["failed", "failed", "skipped", "skipped"]
     assert all("counts" not in row for row in rows)
     with database() as connection:
@@ -142,7 +149,7 @@ def test_reset_noop_preserves_audit_and_usage(database):
     with database() as connection:
         assert connection.execute("SELECT count(*) FROM word_miss_tbl").fetchone() == (0,)
     assert count_miss()["counts"] == {"miss_count": 1}
-    assert count_word_usage_service.count_word_usage('["a"]', username="tester")["results"][0]["counts"] == {"usage_count": 1}
+    assert call_stats(count_word_usage_service, "count_word_usage", ['a'], username="tester")["results"][0]["counts"] == {"usage_count": 1}
     assert reset()["counts"] == {"miss_count": 0}
     with database() as connection:
         before = connection.execute("SELECT * FROM word_miss_tbl").fetchone()

@@ -8,22 +8,25 @@ from unittest.mock import Mock
 import psycopg
 import pytest
 from fastmcp import Client
-from fastmcp.exceptions import ToolError
+from thoth.db.connection import DatabaseError
+from thoth.dto.word import WordWriteCommand
+from thoth.dto.query_words import QueryRequest
+from thoth.common.query_words import QUERY_FIELDS
 
 from thoth.service import (add_update_words_service, query_words_service,
                           count_word_usage_service, count_word_miss_service,
                           reset_word_miss_service, query_users_service)
 from thoth.service.user_lookup_service import validate_username
-from thoth.tools.mcp_tools import mcp
+from thoth.mcp_server import mcp
 from thoth.utils.generate_rebuild_sql import OUTPUT, render_rebuild_sql
 from tests.unit.test_word_repository import ScriptedConnection
 
 CASES = [
-    (add_update_words_service, "add_update_words", '[{"word":"a","tags":["v"]}]'),
-    (query_words_service, "query_words", '{}'),
-    (count_word_usage_service, "count_word_usage", '[]'),
-    (count_word_miss_service, "count_word_miss", '[]'),
-    (reset_word_miss_service, "reset_word_miss", '[]'),
+    (add_update_words_service, "add_update_words", [WordWriteCommand(word="a", tags=("v",))]),
+    (query_words_service, "query_words", QueryRequest(QUERY_FIELDS)),
+    (count_word_usage_service, "count_word_usage", []),
+    (count_word_miss_service, "count_word_miss", []),
+    (reset_word_miss_service, "reset_word_miss", []),
 ]
 
 
@@ -46,7 +49,7 @@ def install(monkeypatch, service, response):
 def test_invalid_username_fails_before_connection(monkeypatch, service, name, text, username):
     config = Mock(side_effect=AssertionError("不能读取配置"))
     monkeypatch.setattr(service, "get_settings", config)
-    with pytest.raises(ToolError, match="username"):
+    with pytest.raises(ValueError, match="username"):
         getattr(service, name)(text, username)
     config.assert_not_called()
 
@@ -54,7 +57,7 @@ def test_invalid_username_fails_before_connection(monkeypatch, service, name, te
 @pytest.mark.parametrize("service,name,text", CASES)
 def test_missing_user_blocks_all_business_sql(monkeypatch, service, name, text):
     connection = install(monkeypatch, service, None)
-    with pytest.raises(ToolError, match="用户不存在"):
+    with pytest.raises(ValueError, match="用户不存在"):
         getattr(service, name)(text, "未注册")
     assert len(connection.statements) == 1
     assert connection.statements[0][1] == {"username": "未注册"}
@@ -64,7 +67,7 @@ def test_missing_user_blocks_all_business_sql(monkeypatch, service, name, text):
 @pytest.mark.parametrize("service,name,text", CASES)
 def test_user_lookup_error_is_sanitized(monkeypatch, service, name, text):
     install(monkeypatch, service, psycopg.OperationalError("private credentials"))
-    with pytest.raises(ToolError, match="查询用户失败") as captured:
+    with pytest.raises(DatabaseError, match="查询用户失败") as captured:
         getattr(service, name)(text, "tester")
     assert "private" not in str(captured.value)
 
@@ -78,13 +81,13 @@ def test_valid_username(username):
 def test_query_users_returns_only_names(monkeypatch, records):
     connection = install(monkeypatch, query_users_service, records)
     result = query_users_service.query_users()
-    assert result == {"results": [{"username": row[1]} for row in records]}
+    assert [row.username for row in result] == [row[1] for row in records]
     assert connection.statements == [("SELECT id, username FROM user_tbl ORDER BY id", {})]
 
 
 def test_query_users_error_is_sanitized(monkeypatch):
     install(monkeypatch, query_users_service, psycopg.OperationalError("private"))
-    with pytest.raises(ToolError, match="查询用户失败") as captured:
+    with pytest.raises(DatabaseError, match="查询用户失败") as captured:
         query_users_service.query_users()
     assert "private" not in str(captured.value)
 
@@ -97,10 +100,11 @@ def test_mcp_required_username_and_read_only_user_listing(monkeypatch):
         async with Client(mcp) as client:
             tools = {tool.name: tool for tool in await client.list_tools()}
             for _, name, text in CASES:
-                assert set(tools[name].inputSchema["required"]) == {"text", "username"}
+                parameter = "query" if name == "query_words" else "words"
+                assert set(tools[name].inputSchema["required"]) == {parameter, "username"}
                 assert tools[name].inputSchema["properties"]["username"]["type"] == "string"
-                assert (await client.call_tool_mcp(name, {"text": text})).isError
-                assert (await client.call_tool_mcp(name, {"text": text, "username": 1})).isError
+                assert (await client.call_tool_mcp(name, {parameter: {} if parameter == "query" else []})).isError
+                assert (await client.call_tool_mcp(name, {parameter: {} if parameter == "query" else [], "username": 1})).isError
             assert not tools["query_users"].inputSchema.get("required")
             result = await client.call_tool_mcp("query_users", {})
             assert not result.isError

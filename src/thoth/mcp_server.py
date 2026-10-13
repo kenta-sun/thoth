@@ -3,7 +3,12 @@
 导入时只完成工具注册；配置读取和数据库连接在实际工具调用时进行。
 """
 
-from thoth.tools.mcp_tools import mcp
+from fastmcp import FastMCP
+from thoth.tools import register_tools
+
+# 严格检查对象、数组及字段类型，在进入业务层前拒绝结构错误。
+mcp = FastMCP(name="thoth-words", strict_input_validation=True)
+register_tools(mcp)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ class WordListItem:
     """承载一个解析后的原始元素，下标及原始值不在后续处理中修改。"""
 
     index: int  # 原 JSON 数组的零基下标，过滤和分组后保持不变。
-    original_value: Any  # 原始 JSON 值，可能是无效类型，仅供内部预处理使用。
+    original_value: Any  # 原始输入值，可能是无效类型，仅供内部预处理使用。
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,10 +26,8 @@ class StatsResult:
 
 @dataclass(frozen=True, slots=True)
 class WordListPreprocessResult:
-    """承载整批输入状态、原始对象以及分离的待处理请求和跳过结果。"""
+    """承载原始对象以及分离的待处理请求和跳过结果。"""
 
-    status: Literal["continue", "stop"]  # continue 允许继续；stop 由 Service 转为工具异常。
-    message: str | None = None  # 整批终止原因；正常输入为 None。
     original_items: list[WordListItem] = field(default_factory=list)  # 原序全部元素；整批终止时为空。
     pending_items: list[WordListItem] = field(default_factory=list)  # 有效且去重的项，引用原始对象。
     skipped_results: list[StatsResult] = field(default_factory=list)  # 已跳过项，保留原下标及原因。

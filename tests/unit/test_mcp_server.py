@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from fastmcp import Client
 
-from thoth.tools import mcp_tools as mcp_server
+from thoth import mcp_server
 from thoth.service import add_update_words_service
 from thoth.db.connection import DatabaseError
 from thoth.service.add_update_words_service import MissingWordFieldsError
@@ -46,11 +46,11 @@ def backend(monkeypatch):
     )
 
 
-def call_add_update_words(text):
+def call_add_update_words(words):
     """通过内存客户端调用工具，返回包含结构化内容或工具错误的协议响应。"""
     async def run():
         async with Client(mcp_server.mcp) as client:
-            return await client.call_tool_mcp("add_update_words", {"username": "tester", "text": text})
+            return await client.call_tool_mcp("add_update_words", {"username": "tester", "words": words})
     return asyncio.run(run())
 
 
@@ -80,14 +80,16 @@ def test_tools_are_exposed_and_save_description_explains_default(backend):
 
     assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss", "query_words", "query_users"}
     tool = next(tool for tool in tools if tool.name == "add_update_words")
-    assert tool.inputSchema["required"] == ["text", "username"]
-    assert set(tool.inputSchema["properties"]) == {"text", "username"}
-    assert tool.inputSchema["properties"]["text"]["type"] == "string"
-    description = tool.description
-    assert "operation" in description
-    assert "省略" in description and "默认" in description and "create" in description
+    assert tool.inputSchema["required"] == ["username", "words"]
+    assert set(tool.inputSchema["properties"]) == {"words", "username"}
+    words = tool.inputSchema["properties"]["words"]
+    assert words["type"] == "array" and words["minItems"] == 1
+    item = words["items"]
+    assert item["additionalProperties"] is False
+    assert item["properties"]["action"]["default"] == "create"
     for field in ("word", "common_form", "hiragana", "meaning", "action", "tags"):
-        assert field in description
+        assert item["properties"][field]["description"]
+    assert all(tool.outputSchema for tool in tools)
     backend.get_settings.assert_not_called()
     backend.open_connection.assert_not_called()
 
@@ -106,10 +108,10 @@ def test_tool_returns_structured_per_word_results(backend):
         status_code="A", created_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
         created_by="test-operator", updated_by="test-operator",
     )
-    result = call_add_update_words(json.dumps([
+    result = call_add_update_words([
         {"tags": ["v"], "word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
-        {"tags": ["v"], "word": "飲む", "operation": {"action": "delete"}},
-    ]))
+        {"tags": ["v"], "word": "飲む", "meaning": "\x00"},
+    ])
 
     assert result.isError is False
     assert result.structuredContent == {
@@ -117,7 +119,7 @@ def test_tool_returns_structured_per_word_results(backend):
             {"index": 0, "word": "食べる", "status": "created"},
             {
                 "index": 1, "word": "飲む", "status": "failed",
-                "reason": "operation.action 仅允许 create 或 update。",
+                "reason": "meaning 不允许包含空字符（U+0000）。",
             },
         ],
     }
@@ -135,11 +137,11 @@ def test_tool_serializes_optional_reason_and_missing_fields_only_when_present(ba
     backend.repository.find_existing_words.return_value = [WordEntity(word="食べる")]
 
 
-    result = call_add_update_words(json.dumps([
+    result = call_add_update_words([
         {"tags": ["v"], "word": "食べる"},
         {"tags": ["v"], "word": "飲む", "meaning": "喝"},
         {"tags": ["v"], "word": "走る", "common_form": "走る", "hiragana": "はしる", "meaning": "跑"},
-    ]))
+    ])
 
     assert result.isError is False
     assert result.structuredContent == {
@@ -156,7 +158,7 @@ def test_tool_serializes_optional_reason_and_missing_fields_only_when_present(ba
 
 def test_database_connection_failure_is_protocol_error(backend):
     backend.open_connection.side_effect = DatabaseError("连接 PostgreSQL 失败，请检查配置。")
-    result = call_add_update_words('[{"tags": ["v"], "word":"食べる"}]')
+    result = call_add_update_words([{'tags': ['v'], 'word': '食べる'}])
     assert result.isError is True
     assert "连接 PostgreSQL 失败" in str(result)
     backend.repository_factory.assert_not_called()
@@ -164,10 +166,10 @@ def test_database_connection_failure_is_protocol_error(backend):
 
 def test_batch_lookup_failure_is_protocol_error_without_writes(backend):
     backend.repository.find_existing_words.side_effect = DatabaseError("查询单词失败，请稍后重试。")
-    result = call_add_update_words(json.dumps([
+    result = call_add_update_words([
         {"tags": ["v"], "word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
-        {"tags": ["v"], "word": "飲む", "meaning": "喝", "operation": {"action": "update"}},
-    ]))
+        {"tags": ["v"], "word": "飲む", "meaning": "喝", "action": "update"},
+    ])
 
     assert result.isError is True
     assert "查询单词失败" in str(result)
@@ -176,10 +178,10 @@ def test_batch_lookup_failure_is_protocol_error_without_writes(backend):
 
 
 def test_surrogate_word_returns_serializable_failure_without_disrupting_valid_word(backend):
-    result = call_add_update_words(json.dumps([
+    result = call_add_update_words([
         {"tags": ["v"], "word": "\ud800"},
         {"tags": ["v"], "word": "飲む", "common_form": "飲む", "hiragana": "のむ", "meaning": "喝"},
-    ]))
+    ])
 
     assert result.isError is False
     rows = result.structuredContent["results"]
@@ -194,7 +196,7 @@ def test_surrogate_word_returns_serializable_failure_without_disrupting_valid_wo
 
 def test_configuration_failure_is_protocol_error(backend):
     backend.get_settings.side_effect = ValueError("缺少 THOTH_PG_DSN。")
-    result = call_add_update_words('[{"tags": ["v"], "word":"食べる"}]')
+    result = call_add_update_words([{'tags': ['v'], 'word': '食べる'}])
     assert result.isError is True
     assert "THOTH_PG_DSN" in str(result)
     backend.open_connection.assert_not_called()
@@ -210,13 +212,12 @@ def test_text_parameter_does_not_accept_array(backend):
 
 
 @pytest.mark.parametrize("tags", [None, [], [""]])
-def test_required_tags_failure_is_per_item_and_does_not_save(backend, tags):
-    result = call_add_update_words(json.dumps([{
-        "word": "食べる", "tags": tags, "operation": {"action": "update"},
-    }]))
-    assert result.isError is False
-    row, = result.structuredContent["results"]
-    assert row["status"] == "failed" and "tags" in row["reason"]
+def test_required_tags_failure_rejects_batch_without_config(backend, tags):
+    result = call_add_update_words([{
+        "word": "食べる", "tags": tags, "action": "update",
+    }])
+    assert result.isError is True
+    backend.get_settings.assert_not_called()
     backend.repository.find_existing_words.assert_not_called()
     backend.repository.insert.assert_not_called()
     backend.repository.update.assert_not_called()

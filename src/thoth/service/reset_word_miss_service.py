@@ -1,9 +1,6 @@
 """reset_word_miss 专属服务：逐词锁定并清零已有错误计数，保留统计记录。"""
 
-from typing import Any
-
 import psycopg
-from fastmcp.exceptions import ToolError
 
 from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
@@ -12,37 +9,33 @@ from thoth.dao.word_miss_tbl_mapper import WordMissTblMapper
 from thoth.db.connection import DatabaseError, open_connection
 from thoth.dto.word_stats import WordListItem, StatsResult
 from thoth.entity import WordMissEntity
-from thoth.service.word_stats_input_service import parse_word_list_text, merge_stats_results, serialize_stats, stats_database_error
+from thoth.service.word_stats_input_service import prepare_word_list, merge_stats_results, stats_database_error
 
 
-def reset_word_miss(text: str, username: str) -> dict[str, list[dict[str, Any]]]:
+def reset_word_miss(words: list[str], username: str) -> list[StatsResult]:
     """清零已有 miss_count，不操作 usage_count，不创建统计记录。
 
     Args:
-        username: 已手动创建的用户名，精确匹配，不存在时返回工具错误。
-        text: 单词 JSON 字符串数组；空数组允许，无效和重复元素跳过。
+        username: 已手动创建的用户名，精确匹配，不存在时抛出 ValueError。
+        words: 单词列表；空数组允许，无效和重复元素跳过。
 
     Returns:
         按输入顺序返回逐项结果；不存在、已删除、无统计或已为零时跳过。
 
     Raises:
-        ToolError: 整批格式、配置或连接失败。
+        ValueError: 单词列表或用户名非法，或用户不存在。
+        DatabaseError: 配置或连接失败。
     """
-    try:
-        validate_username(username)
-        preprocessed = parse_word_list_text(text)
-        if preprocessed.status == "stop":
-            raise ToolError(preprocessed.message)
-        settings = get_settings()
-        with open_connection(settings) as connection:
-            user = require_user(connection, username)
-            executed = [
-                _reset_item(item, connection, settings.operator, user.id)
-                for item in preprocessed.pending_items
-            ]
-            return serialize_stats(merge_stats_results(preprocessed, executed))
-    except (ValueError, DatabaseError) as exc:
-        raise ToolError(str(exc)) from exc
+    validate_username(username)
+    preprocessed = prepare_word_list(words)
+    settings = get_settings()
+    with open_connection(settings) as connection:
+        user = require_user(connection, username)
+        executed = [
+            _reset_item(item, connection, settings.operator, user.id)
+            for item in preprocessed.pending_items
+        ]
+        return merge_stats_results(preprocessed, executed)
 
 
 def _reset_item(item: WordListItem, connection: psycopg.Connection,

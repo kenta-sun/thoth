@@ -12,7 +12,20 @@ from thoth.db.connection import DatabaseError
 from thoth.entity import WordEntity, TagEntity, WordTagEntity
 from thoth.dto.word import WordInput
 from thoth.service import add_update_words_service as service
-from thoth.service.add_update_words_service import parse_words_text, save_word_batch, serialize_word_batch
+from thoth.service.add_update_words_service import prepare_word_inputs, save_word_batch
+from thoth.dto.request.add_update_words_request import WordWriteInput
+from thoth.tools.add_update_words_tools import to_write_commands, to_write_response
+from pydantic import TypeAdapter
+
+
+def prepare_inputs(raw):
+    """通过真实请求校验和入口映射构造业务输入，不解析字符串协议。"""
+    return prepare_word_inputs(to_write_commands(TypeAdapter(list[WordWriteInput]).validate_python(raw)))
+
+
+def serialize_word_batch(batch):
+    """验证真实响应模型的对外序列化。"""
+    return to_write_response(batch).model_dump(mode="json")
 
 
 class MemoryTransaction:
@@ -89,7 +102,7 @@ def repository(monkeypatch):
 
 def save_items(items, repository):
     """通过真实解析和 Service 流程处理输入，Mapper 由 fixture 隔离。"""
-    return save_word_batch(parse_words_text(json.dumps(items)), repository.connection)
+    return save_word_batch(prepare_inputs(items), repository.connection)
 
 
 def complete_word(word="食べる"):
@@ -98,60 +111,33 @@ def complete_word(word="食べる"):
             "meaning": "吃", "tags": ["v", "v2"]}
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "not json", "{}", "null", "[]", '"words"',
-        '[{"word":"食べる","word":"飲む"}]',
-        '[{"word":"食べる","operation":{"action":"create","action":"update"}}]',
-        '[{"word":"食べる","meaning":NaN}]',
-        '[{"word":"食べる","meaning":Infinity}]',
-        '[{"word":"食べる","meaning":-Infinity}]',
-    ],
-)
-def test_rejects_invalid_json_batch(text):
+@pytest.mark.parametrize("raw", [None, {}, "[]", [None], [42], [{"word": "a"}],
+    [{"word": "a", "tags": ["v"], "operation": {"action": "create"}}],
+    [{"word": "a", "tags": ["v"], "action": "delete"}],
+    [{"word": "a", "tags": ["v"], "meaning": 42}],
+    [{"word": "a", "tags": ["v"], "unknown": 1}]])
+def test_structure_errors_rejected_before_business(repository, raw):
     with pytest.raises(ValueError):
-        parse_words_text(text)
-
-
-@pytest.mark.parametrize("item", [
-    {}, {"word": None}, {"word": ""}, {"word": " \t"}, {"word": 42},
-    None, 42, [], "食べる",
-    {"word": "食べる", "meaning": 42},
-    {"word": "食べる", "meaning": "吃\x00食用"},
-    {"word": "食べる", "hiragana": ["たべる"]},
-    {"word": "食べる", "common_form": False},
-    {"word": "食べる", "created_at": "2026-10-10"},
-    {"word": "食べる", "sql": "DROP TABLE word_tbl"},
-    {"word": "食べる", "operation": None},
-    {"word": "食べる", "operation": "update"},
-    {"word": "食べる", "operation": {}},
-    {"word": "食べる", "operation": {"action": "UPDATE"}},
-    {"word": "食べる", "operation": {"action": "delete"}},
-    {"word": "食べる", "operation": {"action": ["update"]}},
-    {"word": "食べる", "operation": {"action": "update", "sql": "DROP TABLE word_tbl"}},
-])
-def test_invalid_item_fails_without_touching_repository(repository, item):
-    result = save_items([item], repository)
-
-    repository.insert.assert_not_called()
-    repository.update.assert_not_called()
+        prepare_inputs(raw)
     repository.find_existing_words.assert_not_called()
-    assert result.results[0].index == 0
+    repository.insert.assert_not_called()
+
+
+@pytest.mark.parametrize("word", ["", " \t"])
+def test_business_invalid_word_fails_without_touching_repository(repository, word):
+    result = save_items([{"word": word, "tags": ["v"]}], repository)
     assert result.results[0].status == "failed"
-    assert result.results[0].reason
+    repository.find_existing_words.assert_not_called()
 
 
-
-
-def test_parse_retains_invalid_elements_and_valid_entities():
-    items = parse_words_text('[null,42,{"word":"食べる","tags":["v"]}]')
+def test_prepare_retains_business_errors_and_valid_entities():
+    items = prepare_inputs([{"word": "", "tags": ["v"]}, {"word": "食べる", "tags": ["v"]}])
     assert all(isinstance(item, WordInput) for item in items)
-    assert items[0].error and items[1].error
-    assert items[2].error is None
-    assert items[2].entity == WordEntity(word="食べる")
-    assert items[2].tags == ("v",)
-    assert items[2].action == "create"
+    assert items[0].error
+    assert items[1].error is None
+    assert items[1].entity == WordEntity(word="食べる")
+    assert items[1].tags == ("v",)
+    assert items[1].action == "create"
 
 
 @pytest.mark.parametrize("tags", [None, [], "v", {}, [None], [1], [True], [""], [" "],
@@ -159,10 +145,9 @@ def test_parse_retains_invalid_elements_and_valid_entities():
 @pytest.mark.parametrize("action", ["create", "update"])
 def test_invalid_tags_fail_without_database_access(repository, tags, action):
     item = complete_word()
-    item.update(tags=tags, operation={"action": action})
-    result = save_items([item], repository)
-    assert result.results[0].status == "failed"
-    assert "tags" in result.results[0].reason
+    item.update(tags=tags, action=action)
+    with pytest.raises(ValueError):
+        save_items([item], repository)
     repository.find_existing_words.assert_not_called()
     assert repository.connection.commits == 0
 
@@ -171,19 +156,20 @@ def test_invalid_tags_fail_without_database_access(repository, tags, action):
 def test_missing_tags_is_rejected(repository, action):
     item = complete_word()
     del item["tags"]
-    item["operation"] = {"action": action}
-    assert save_items([item], repository).results[0].status == "failed"
+    item["action"] = action
+    with pytest.raises(ValueError):
+        save_items([item], repository)
     repository.find_existing_words.assert_not_called()
 
 
 def test_tags_are_deduplicated_without_changing_case():
     item = complete_word()
     item["tags"] = ["v", "v2", "v", "V", "a" * 32]
-    assert parse_words_text(json.dumps([item]))[0].tags == ("v", "v2", "V", "a" * 32)
+    assert prepare_inputs([item])[0].tags == ("v", "v2", "V", "a" * 32)
 
 
 def test_create_preserves_entity_and_writes_tags_in_one_transaction(repository):
-    requests = parse_words_text(json.dumps([complete_word()]))
+    requests = prepare_inputs([complete_word()])
     result = save_word_batch(requests, repository.connection, operator="tester")
     assert repository.insert.call_args.args[0] is requests[0].entity
     repository.find_existing_words.assert_called_once_with(["食べる"])
@@ -200,7 +186,7 @@ def test_create_preserves_entity_and_writes_tags_in_one_transaction(repository):
 def test_update_ignores_empty_information_and_preserves_nonempty_text(repository, empty):
     repository.find_existing_words.return_value = [WordEntity(word=" 食べる ")]
     result = save_items([{"word": " 食べる ", "common_form": empty, "meaning": " 吃 ",
-                          "tags": ["v"], "operation": {"action": "update"}}], repository)
+                          "tags": ["v"], "action": "update"}], repository)
     repository.update.assert_called_once_with(WordEntity(word=" 食べる ", meaning=" 吃 "))
     assert result.results[0].status == "updated"
     assert repository.connection.links == {7: ["v"]}
@@ -214,7 +200,7 @@ def test_tags_only_update_and_identical_lists_always_replace(repository):
     events.attach_mock(repository.links_mapper.delete_by_word_id, "delete")
     events.attach_mock(repository.links_mapper.insert_many, "insert")
     result = save_items([{"word": "食べる", "tags": ["v", "v2"],
-                          "operation": {"action": "update"}}], repository)
+                          "action": "update"}], repository)
     assert result.results[0].status == "updated"
     assert [call[0] for call in events.mock_calls] == ["update", "delete", "insert"]
     assert repository.connection.links == {7: ["v", "v2"], 8: ["n"]}
@@ -234,7 +220,7 @@ def test_existing_create_validates_tags_but_never_writes(repository):
 @pytest.mark.parametrize("action", ["create", "update"])
 def test_missing_new_fields_are_reported_and_next_item_succeeds(repository, action):
     result = save_items([{"word": "食べる", "meaning": "吃", "tags": ["v"],
-                          "operation": {"action": action}}, complete_word("飲む")], repository)
+                          "action": action}, complete_word("飲む")], repository)
     assert [row.status for row in result.results] == ["failed", "created"]
     assert result.results[0].fields == ("common_form", "hiragana")
     assert serialize_word_batch(result)["results"][0]["fields"] == ["common_form", "hiragana"]
@@ -246,7 +232,7 @@ def test_unknown_tag_prevents_all_writes_even_for_existing_create(repository, ac
     repository.find_existing_words.return_value = [WordEntity(word="食べる")]
     repository.tags_mapper.find_by_codes.side_effect = None
     repository.tags_mapper.find_by_codes.return_value = [TagEntity(code="v")]
-    result = save_items([{**complete_word(), "operation": {"action": action}}], repository)
+    result = save_items([{**complete_word(), "action": action}], repository)
     assert result.results[0].status == "failed"
     assert "v2" in result.results[0].reason
     repository.insert.assert_not_called()
@@ -259,7 +245,7 @@ def test_unknown_tag_prevents_all_writes_even_for_existing_create(repository, ac
 def test_concurrent_insert_conflict(repository, action, expected):
     repository.insert.side_effect = None
     repository.insert.return_value = None
-    result = save_items([{**complete_word(), "operation": {"action": action}}], repository)
+    result = save_items([{**complete_word(), "action": action}], repository)
     assert result.results[0].status == expected
     assert repository.update.call_count == (action == "update")
     assert repository.links_mapper.insert_many.call_count == (action == "update")
@@ -270,7 +256,7 @@ def test_external_deletion_causes_failure_without_label_writes(repository, exist
     repository.find_existing_words.return_value = [WordEntity(word="食べる")] if exists else []
     repository.insert.side_effect = repository.update.side_effect = None
     repository.insert.return_value = repository.update.return_value = None
-    result = save_items([{**complete_word(), "operation": {"action": "update"}}], repository)
+    result = save_items([{**complete_word(), "action": "update"}], repository)
     assert result.results[0].status == "failed"
     assert "记录发生变化" in result.results[0].reason
     repository.links_mapper.delete_by_word_id.assert_not_called()
@@ -302,7 +288,7 @@ def test_failure_rolls_back_word_and_all_labels_and_next_item_succeeds(repositor
         target.side_effect = fail_once
     else:
         connection.commit_error = error
-    item = {**complete_word(), "operation": {"action": "update"}}
+    item = {**complete_word(), "action": "update"}
     result = save_items([item], repository)
     assert result.results[0].status == "failed"
     assert "secret" not in result.results[0].reason
@@ -329,7 +315,7 @@ def test_single_item_failure_does_not_stop_same_batch(repository):
 
 
 def test_invalid_duplicate_blocks_valid_duplicate_but_not_other_items(repository):
-    result = save_items([complete_word(), {"word": "食べる", "tags": []}, complete_word("飲む")], repository)
+    result = save_items([complete_word(), {"word": "食べる", "tags": ["v"], "meaning": "\x00"}, complete_word("飲む")], repository)
     assert [row.status for row in result.results] == ["failed", "failed", "created"]
     assert "重复" in result.results[0].reason
     repository.find_existing_words.assert_called_once_with(["飲む"])
@@ -339,7 +325,7 @@ def test_one_lookup_covers_90_new_words_and_10_partial_updates(repository):
     words = [f"単語{index:03d}" for index in range(100)]
     existing = set(words[::10])
     repository.find_existing_words.return_value = [WordEntity(word=word) for word in existing]
-    items = [{"word": word, "meaning": "更新", "tags": ["v"], "operation": {"action": "update"}}
+    items = [{"word": word, "meaning": "更新", "tags": ["v"], "action": "update"}
              if word in existing else complete_word(word) for word in words]
     result = save_items(items, repository)
     repository.find_existing_words.assert_called_once_with(words)

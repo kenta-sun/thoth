@@ -8,7 +8,8 @@ import pytest
 from thoth.dao.tag_tbl_mapper import TagTblMapper
 from thoth.dao.word_tag_tbl_mapper import WordTagTblMapper
 from thoth.entity import TagEntity, WordTagEntity
-from thoth.service.add_update_words_service import parse_words_text, save_word_batch, serialize_word_batch
+from thoth.service.add_update_words_service import save_word_batch
+from tests.unit.test_add_update_words_service import prepare_inputs, serialize_word_batch
 from tests.unit.test_word_repository import ScriptedConnection, database_row
 
 
@@ -68,10 +69,10 @@ def test_json_through_all_mappers_preserves_update_and_replaces_tags():
         [tag_row("v"), tag_row("v2")], database_row("食べる", record_id=8), None, None, None,
         [tag_row("v")], database_row("飲む", meaning="喝", status_code="D"), None, None,
     )
-    requests = parse_words_text(json.dumps([
+    requests = prepare_inputs([
         {"word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃", "tags": ["v", "v2"]},
-        {"word": "飲む", "meaning": "喝", "tags": ["v"], "operation": {"action": "update"}},
-    ]))
+        {"word": "飲む", "meaning": "喝", "tags": ["v"], "action": "update"},
+    ])
     result = serialize_word_batch(save_word_batch(requests, connection))
     assert result == {"results": [
         {"index": 0, "word": "食べる", "status": "created"},
@@ -96,10 +97,10 @@ def test_real_mapper_error_rolls_back_before_next_word_transaction():
         psycopg.errors.ForeignKeyViolation("secret driver detail"),
         [tag_row()], database_row("飲む", record_id=8), None, None,
     )
-    requests = parse_words_text(json.dumps([
+    requests = prepare_inputs([
         {"word": word, "common_form": word, "hiragana": "かな", "meaning": "释义", "tags": ["v"]}
         for word in ["食べる", "飲む"]
-    ]))
+    ])
     results = save_word_batch(requests, connection).results
     assert [row.status for row in results] == ["failed", "created"]
     assert "23503" in results[0].reason and "secret" not in results[0].reason

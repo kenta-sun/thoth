@@ -1,39 +1,22 @@
-"""统计输入公共服务：解析为预处理 DTO，供三个专属 Service 执行后合并输出。"""
+"""统计输入公共服务：过滤单词并构造预处理 DTO，供三个专属 Service 执行后合并输出。"""
 
-import json
 from typing import Any
 
 import psycopg
 
 from thoth.db.connection import DatabaseError
 from thoth.dto.word_stats import WordListItem, WordListPreprocessResult, StatsResult
-from thoth.utils.json_utils import reject_json_constant, unique_json_object
 
 
-def parse_word_list_text(text: str) -> WordListPreprocessResult:
-    """包装原始数组并过滤、去重，不构造数据库实体，不读取配置或访问数据库。
+def prepare_word_list(words: list[str]) -> WordListPreprocessResult:
+    """过滤业务无效文本并去重，保持输入位置；空数组允许，不访问数据库。
 
-    Args:
-        text: 单词 JSON 字符串数组，空数组允许，元素可以包含待跳过的无效值。
-
-    Returns:
-        整批格式无效时 status 为 stop，message 为原因，各列表为空；正常时为
-        continue。待处理项引用原始对象，跳过项携带原始下标，原始值不对外序列化。
+    参数应为字符串列表；直接业务调用传入非列表时拒绝整批，元素的防御性检查
+    保留逐项跳过结果。MCP 入口会在调用前拒绝非字符串元素。
     """
-    if not isinstance(text, str) or not text.strip():
-        return WordListPreprocessResult("stop", "text 必须是 JSON 数组字符串。")
-    try:
-        raw = json.loads(text, object_pairs_hook=unique_json_object,
-                         parse_constant=reject_json_constant)
-    except json.JSONDecodeError as exc:
-        return WordListPreprocessResult("stop", f"text 不是合法 JSON：第 {exc.lineno} 行、第 {exc.colno} 列格式错误。")
-    except RecursionError:
-        return WordListPreprocessResult("stop", "JSON 嵌套层级过深。")
-    except ValueError as exc:
-        return WordListPreprocessResult("stop", str(exc))
-    if not isinstance(raw, list):
-        return WordListPreprocessResult("stop", "text 必须包含 JSON 数组。")
-    original = [WordListItem(index, value) for index, value in enumerate(raw)]
+    if not isinstance(words, list):
+        raise ValueError("words 必须是单词列表。")
+    original = [WordListItem(index, value) for index, value in enumerate(words)]
     pending: list[WordListItem] = []
     skipped: list[StatsResult] = []
     first: dict[str, int] = {}
@@ -58,7 +41,7 @@ def parse_word_list_text(text: str) -> WordListPreprocessResult:
         else:
             first[word] = item.index
             pending.append(item)
-    return WordListPreprocessResult("continue", original_items=original,
+    return WordListPreprocessResult(original_items=original,
                                     pending_items=pending, skipped_results=skipped)
 
 
@@ -86,18 +69,3 @@ def stats_database_error(exc: psycopg.Error) -> DatabaseError:
     """将驱动错误脱敏，仅保留 SQLSTATE；不建议自动重试非幂等计数。"""
     code = f"（SQLSTATE {exc.sqlstate}）" if exc.sqlstate else ""
     return DatabaseError(f"统计操作失败{code}。")
-
-
-def serialize_stats(results: list[StatsResult]) -> dict[str, list[dict[str, Any]]]:
-    """返回逐项结果，只输出实际取得的计数；None 字段省略，word 除外。"""
-    rows = []
-    for item in results:
-        row = {"index": item.index, "word": item.word, "status": item.status}
-        if item.reason is not None:
-            row["reason"] = item.reason
-        counts = {field: value for field in ("miss_count", "usage_count")
-                  if (value := getattr(item, field)) is not None}
-        if counts:
-            row["counts"] = counts
-        rows.append(row)
-    return {"results": rows}
