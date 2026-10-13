@@ -1,7 +1,7 @@
 """数据库基础层负责按配置建立 PostgreSQL 连接，并在调用结束时关闭。
 
 Service 通过 open_connection 获取连接并交给各 Mapper；连接启用 autocommit，
-每项写入的事务范围由 Service 显式管理；交给业务层前先确认环境对应的库名。
+每项写入的事务范围由 Service 显式管理；目标数据库完全由连接配置指定。
 """
 
 from __future__ import annotations
@@ -37,11 +37,10 @@ def open_connection(settings: Settings | None = None) -> Iterator[psycopg.Connec
 
     Raises:
         ValueError: 未提供 settings 且配置层校验失败，原样交给调用方处理。
-        DatabaseError: 连接失败、库名检查失败或实际库名不匹配，关闭连接并拒绝业务操作。
+        DatabaseError: 连接失败时返回脱敏错误，不向业务层提供连接。
     """
     # 显式传入配置时直接复用；配置错误不混同为数据库连接错误。
     resolved = settings or get_settings()
-    expected_database = resolved.expected_database
     try:
         # autocommit 使查重读取不留下跨项事务；写入事务由 Service 逐项开启。
         connection = psycopg.connect(
@@ -54,15 +53,6 @@ def open_connection(settings: Settings | None = None) -> Iterator[psycopg.Connec
         ) from None
 
     try:
-        # 只读确认实际库名后才交给业务层，防止连接串覆盖导致写入错误环境。
-        try:
-            actual_database = connection.execute("SELECT current_database()").fetchone()[0]
-        except psycopg.Error:
-            raise DatabaseError("无法确认 PostgreSQL 目标库，已拒绝执行业务操作。") from None
-        if actual_database != expected_database:
-            raise DatabaseError(
-                f"数据库与 {resolved.environment} 环境不匹配，应连接 {expected_database}，已拒绝执行业务操作。"
-            )
         yield connection
     finally:
         connection.close()

@@ -15,7 +15,7 @@ def profiles(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".env").write_text("THOTH_ENV=dev\nTHOTH_OPERATOR=common\n")
-    for env, database in config.ENV_DATABASES.items():
+    for env, database in {"dev": "custom_dev", "test": "thoth_test", "prd": "custom_live"}.items():
         (tmp_path / f".env.{env}").write_text(
             f"THOTH_PG_DSN=postgresql://user:password@invalid.test/{database}\n"
         )
@@ -30,8 +30,7 @@ def test_profile_selection(profiles, monkeypatch, environment):
     monkeypatch.setenv("THOTH_ENV", environment)
     settings = config.load_settings()
     assert settings.environment == environment
-    assert settings.pg_dsn.endswith("/" + config.ENV_DATABASES[environment])
-    assert settings.expected_database == config.ENV_DATABASES[environment]
+    assert settings.pg_dsn.endswith("/" + {"dev": "custom_dev", "test": "thoth_test", "prd": "custom_live"}[environment])
 
 
 def test_configuration_precedence(profiles, monkeypatch):
@@ -55,9 +54,9 @@ def test_explicit_test_selection_ignores_prd_choice(profiles, monkeypatch):
 def test_switching_profiles_does_not_pollute_process(profiles):
     """连续读取环境不会修改进程变量，亦不会串用上次连接。"""
     before = dict(os.environ)
-    assert config.load_settings("dev").pg_dsn.endswith("/thoth_dev")
+    assert config.load_settings("dev").pg_dsn.endswith("/custom_dev")
     assert config.load_settings("test").pg_dsn.endswith("/thoth_test")
-    assert config.load_settings("prd").pg_dsn.endswith("/thoth_memory")
+    assert config.load_settings("prd").pg_dsn.endswith("/custom_live")
     assert dict(os.environ) == before
 
 
@@ -139,13 +138,13 @@ def test_external_configuration_directory_is_independent_of_cwd(profiles, tmp_pa
     external = tmp_path / "正式配置"
     external.mkdir()
     (external / ".env").write_text("THOTH_ENV=prd\nTHOTH_OPERATOR=release\n")
-    (external / ".env.prd").write_text("THOTH_PG_DSN=postgresql://u:p@invalid.test/thoth_memory\n")
+    (external / ".env.prd").write_text("THOTH_PG_DSN=postgresql://u:p@invalid.test/custom_live\n")
     monkeypatch.setenv("THOTH_CONFIG_DIR", str(external))
     monkeypatch.chdir(tmp_path.parent)
     settings = config.load_settings()
     assert settings.environment == "prd"
     assert settings.operator == "release"
-    assert settings.pg_dsn.endswith("/thoth_memory")
+    assert settings.pg_dsn.endswith("/custom_live")
 
 
 def test_explicit_root_overrides_directory_environment(profiles, monkeypatch):

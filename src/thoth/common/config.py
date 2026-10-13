@@ -11,13 +11,12 @@ import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from types import MappingProxyType
 
 from dotenv import dotenv_values
 
 # 源码开发默认目录；安装包通过 THOTH_CONFIG_DIR 使用独立配置目录。
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ENV_DATABASES = MappingProxyType({"dev": "thoth_dev", "test": "thoth_test", "prd": "thoth_memory"})
+SUPPORTED_ENVIRONMENTS = frozenset({"dev", "test", "prd"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,12 +27,6 @@ class Settings:
     operator: str = "THOTH_MCP"  # 写入 created_by、updated_by 的操作者标识。
     environment: str = "dev"  # 运行环境，仅允许 dev、test、prd。
 
-    @property
-    def expected_database(self) -> str:
-        """返回当前环境必须连接的数据库名；非法环境在连接前报错。"""
-        if self.environment not in ENV_DATABASES:
-            raise ValueError("THOTH_ENV 必须为 dev、test 或 prd。")
-        return ENV_DATABASES[self.environment]
 
 
 def load_settings(environment: str | None = None, *, root: Path | None = None) -> Settings:
@@ -66,7 +59,7 @@ def load_settings(environment: str | None = None, *, root: Path | None = None) -
     common = dotenv_values(directory / ".env", interpolate=False)
     selected = environment if environment is not None else os.environ.get("THOTH_ENV", common.get("THOTH_ENV"))
     selected = (selected or "").strip()
-    if selected not in ENV_DATABASES:
+    if selected not in SUPPORTED_ENVIRONMENTS:
         raise ValueError("THOTH_ENV 必须为 dev、test 或 prd，且不得为空。")
     env_file = directory / f".env.{selected}"
     if not env_file.is_file():

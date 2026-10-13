@@ -18,6 +18,7 @@ def isolated_configuration(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".env").write_text("THOTH_ENV=dev\n")
     (tmp_path / ".env.dev").write_text("")
+    monkeypatch.delenv("THOTH_CONFIG_DIR", raising=False)
     monkeypatch.delenv("THOTH_ENV", raising=False)
     monkeypatch.setenv("THOTH_PG_DSN", TEST_DSN)
     monkeypatch.delenv("THOTH_OPERATOR", raising=False)
@@ -89,7 +90,6 @@ def test_settings_repr_omits_connection_credentials():
 def fake_connect(monkeypatch):
     """替换驱动连接函数，返回可检查调用参数和关闭次数的模拟对象。"""
     connect = Mock(return_value=Mock())
-    connect.return_value.execute.return_value.fetchone.return_value = ("thoth_dev",)
     monkeypatch.setattr(connection_module.psycopg, "connect", connect)
     return connect
 
@@ -132,23 +132,13 @@ def test_connection_error_does_not_echo_dsn_or_credentials(fake_connect):
     assert "test_password" not in message
 
 
-@pytest.mark.parametrize("environment,actual", [("dev", "thoth_memory"), ("test", "thoth_dev"), ("prd", "thoth_test")])
-def test_wrong_database_never_reaches_business_code(fake_connect, environment, actual):
-    """三种环境均先检查库名，不匹配时关闭连接且不执行调用方业务。"""
-    fake_connect.return_value.execute.return_value.fetchone.return_value = (actual,)
-    with pytest.raises(connection_module.DatabaseError, match="环境不匹配"):
-        with connection_module.open_connection(config.Settings(TEST_DSN, environment=environment)):
-            pytest.fail("错误库不得交给业务层")
-    fake_connect.return_value.execute.assert_called_once_with("SELECT current_database()")
-    fake_connect.return_value.close.assert_called_once_with()
-
-
-def test_database_check_error_closes_and_hides_credentials(fake_connect):
-    """库名检查失败也释放连接，不展示驱动错误中的凭证。"""
-    fake_connect.return_value.execute.side_effect = psycopg.OperationalError(TEST_DSN)
-    with pytest.raises(connection_module.DatabaseError, match="无法确认") as error:
-        with connection_module.open_connection():
-            pytest.fail("不得执行业务")
-    assert TEST_DSN not in str(error.value)
-    assert error.value.__suppress_context__
-    fake_connect.return_value.close.assert_called_once_with()
+@pytest.mark.parametrize("environment", ["dev", "test", "prd"])
+@pytest.mark.parametrize("database", ["japanese_words", "custom_live"])
+def test_environment_accepts_configured_database(fake_connect, environment, database):
+    """各环境直接使用连接配置中的自定义库名，不执行库名探测 SQL。"""
+    dsn = f"postgresql://test_user:test_password@invalid.test/{database}"
+    with connection_module.open_connection(config.Settings(dsn, environment=environment)) as opened:
+        assert opened is fake_connect.return_value
+    fake_connect.assert_called_once_with(dsn, autocommit=True, connect_timeout=5)
+    opened.execute.assert_not_called()
+    opened.close.assert_called_once_with()

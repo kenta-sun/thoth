@@ -12,12 +12,12 @@
 
 首次配置时复制 `.env.example` 为 `.env`，复制需要使用的 `.env.dev.example`、`.env.test.example` 或 `.env.prd.example` 为对应环境文件，并填写真实数据库凭证。正式生产配置仅放在正式部署目录；真实 `.env` 和 `.env.*` 文件均不提交 Git。
 
-| 文件 | 用途 | 对应数据库 |
+| 文件 | 用途 | 数据库示例 |
 | --- | --- | --- |
 | `.env` | 通过 `THOTH_ENV=dev` 选择默认环境，并存放公共配置；禁止放连接串 | — |
 | `.env.dev` | 开发版 Thoth 配置 | `thoth_dev` |
 | `.env.test` | 集成测试配置 | `thoth_test` |
-| `.env.prd` | 正式部署配置 | `thoth_memory` |
+| `.env.prd` | 正式部署配置 | `thoth_prd` |
 
 | 配置项 | 说明 |
 | --- | --- |
@@ -31,7 +31,7 @@
 内部调用 `load_settings(root=...)` 时，显式目录优先于 `THOTH_CONFIG_DIR`，用于测试等需要隔离配置的场景。
 `THOTH_CONFIG_DIR` 不写进 `.env`，因为读取 `.env` 前就需要确定它的位置。
 
-数据库连接建立后，先只读查询实际库名，再核对环境与库名映射；不匹配时关闭连接，拒绝执行业务 SQL。该检查用于防止误连，不代替数据库账户权限隔离。
+运行服务的目标数据库完全由 `THOTH_PG_DSN` 指定，代码不限制数据库名称。`THOTH_ENV` 只选择配置文件，不绑定库名。请通过各环境的连接配置及数据库账号权限隔离开发与正式数据。集成测试另有独立的测试库保护。
 
 ```shell
 # 采用 .env 中的默认环境
@@ -314,7 +314,7 @@ JSON 参数 → FastMCP 校验 → 请求模型 → 工具入口映射 → 内�
 
 ## 启动 MCP
 
-先按上文准备 `.env` 和对应环境文件。默认选择 `dev`，正式部署显式指定 `THOTH_ENV=prd`；连接串必须与环境对应的数据库匹配。
+先按上文准备 `.env` 和对应环境文件。默认选择 `dev`，正式部署显式指定 `THOTH_ENV=prd`；连接串应指向你为该环境准备的数据库。
 
 ```shell
 .venv/bin/python -m thoth.mcp_server
