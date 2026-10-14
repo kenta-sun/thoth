@@ -56,7 +56,7 @@ def seed(connect):
         connection.execute("INSERT INTO user_tbl (username) VALUES ('甲'), ('乙')")
     payload = [{"word": word, "common_form": word, "hiragana": "かな", "meaning": "释义", "tags": ["n"]}
                for word in ("a", "b")]
-    result = add_update_words_tools.add_update_words(username="甲", words=[WordWriteInput.model_validate(item) for item in payload]).model_dump(mode="json")
+    result = add_update_words_tools.add_update_words(words=[WordWriteInput.model_validate(item) for item in payload]).model_dump(mode="json")
     assert all(row["status"] == "created" for row in result["results"])
 
 
@@ -94,7 +94,7 @@ def test_two_users_share_words_but_not_counts_or_reset(rebuilt):
     assert query("甲", fields=["miss_count"], where={"word": {"eq": "a"}}) == [{"miss_count": 3}]
     assert query("乙", fields=["miss_count"], where={"word": {"eq": "b"}}) == [{"miss_count": 0}]
     update = [WordWriteInput(word="a", meaning="共享的新释义", tags=["v"], action="update")]
-    add_update_words_tools.add_update_words(username="乙", words=update)
+    add_update_words_tools.add_update_words(words=update)
     assert query("甲", fields=["meaning", "tags"], where={"word": {"eq": "a"}}) == [{"meaning": "共享的新释义", "tags": ["v"]}]
 
 

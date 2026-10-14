@@ -6,7 +6,6 @@ from collections import Counter
 
 import psycopg
 
-from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
 from thoth.dao.tag_tbl_mapper import TagTblMapper
 from thoth.dao.word_tag_tbl_mapper import WordTagTblMapper
@@ -18,25 +17,21 @@ from thoth.entity import WordEntity, WordTagEntity
 INFORMATION_FIELDS = ("common_form", "hiragana", "meaning")
 
 
-def add_update_words(words: list[WordWriteCommand], username: str) -> WordBatchResult:
+def add_update_words(words: list[WordWriteCommand]) -> WordBatchResult:
     """归一化写入指令并逐项保存，每项单词与标签共用独立事务。
 
     Args:
         words: 结构已校验的内部写入指令，不包含接口模型。
-        username: 已有用户名，精确匹配；不存在时拒绝整批操作。
 
     Returns:
         按输入顺序排列的业务结果；单项失败不会中断其他项。
 
     Raises:
-        ValueError: 用户名非法或不存在。
         DatabaseError: 配置、连接或批量查询失败，消息已脱敏。
     """
-    validate_username(username)
     items = prepare_word_inputs(words)
     settings = get_settings()
     with open_connection(settings) as connection:
-        require_user(connection, username)
         return save_word_batch(items, connection)
 
 

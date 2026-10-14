@@ -44,7 +44,6 @@ def test_main_rejects_missing_configuration_before_listening(monkeypatch):
 @pytest.fixture
 def backend(monkeypatch):
     """替换配置、连接和 Mapper，保留真实 Service 流程以验证 MCP 协议结果。"""
-    monkeypatch.setattr(add_update_words_service, "require_user", Mock(return_value=SimpleNamespace(id=1)))
     settings = SimpleNamespace()
     get_settings = Mock(return_value=settings)
     connection = MagicMock()
@@ -74,7 +73,7 @@ def call_add_update_words(words):
     """通过内存客户端调用工具，返回包含结构化内容或工具错误的协议响应。"""
     async def run():
         async with Client(mcp_server.mcp) as client:
-            return await client.call_tool_mcp("add_update_words", {"username": "tester", "words": words})
+            return await client.call_tool_mcp("add_update_words", {"words": words})
     return asyncio.run(run())
 
 
@@ -104,8 +103,8 @@ def test_tools_are_exposed_and_save_description_explains_default(backend):
 
     assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss", "query_words", "query_users"}
     tool = next(tool for tool in tools if tool.name == "add_update_words")
-    assert tool.inputSchema["required"] == ["username", "words"]
-    assert set(tool.inputSchema["properties"]) == {"words", "username"}
+    assert tool.inputSchema["required"] == ["words"]
+    assert set(tool.inputSchema["properties"]) == {"words"}
     words = tool.inputSchema["properties"]["words"]
     assert words["type"] == "array" and words["minItems"] == 1
     item = words["items"]
@@ -229,7 +228,7 @@ def test_configuration_failure_is_protocol_error(backend):
 def test_text_parameter_does_not_accept_array(backend):
     async def run():
         async with Client(mcp_server.mcp) as client:
-            return await client.call_tool_mcp("add_update_words", {"username": "tester", "text": [{"tags": ["v"], "word": "食べる"}]})
+            return await client.call_tool_mcp("add_update_words", {"text": [{"tags": ["v"], "word": "食べる"}]})
     result = asyncio.run(run())
     assert result.isError is True
     backend.get_settings.assert_not_called()

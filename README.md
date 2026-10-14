@@ -39,7 +39,8 @@ Dockerfile 设置容器内监听 `0.0.0.0:8000`，Compose 仅发布宿主机 `12
 
 ## 用户与统计归属
 
-五个有参工具均要求独立的 `username`，与 `words` 或 `query` 并列，不增加最外层 request 包装。
+`query_words`、`count_word_usage`、`count_word_miss` 和 `reset_word_miss` 要求独立的 `username`，与 `words` 或 `query` 并列，不增加最外层 request 包装。
+`add_update_words` 只接收 `words`，不要求用户名，也不校验用户是否存在。
 用户名按原文区分大小写，允许中文，长度为 1～128 字符，不能含首尾空白。
 用户名须手动通过 SQL 添加；非法或不存在时返回工具错误，不自动创建或选择默认用户。
 结构和类型错误在进入业务层前整批拒绝；空统计数组或全部文本被过滤时仍校验用户。
@@ -61,7 +62,7 @@ Dockerfile 设置容器内监听 `0.0.0.0:8000`，Compose 仅发布宿主机 `12
 这个工具只读，不返回用户 ID 或审计信息。MCP 不提供用户新增、修改、删除或单词删除、恢复工具。
 本地用户名仅用于数据分组，不是登录认证；调用方能够指定任何已有用户名。
 
-单词、释义、读音和标签全员共享；保存工具校验用户后修改共享词库。
+单词、释义、读音和标签全员共享；保存工具直接修改共享词库。
 两张统计表以 `(user_id, word_id)` 为联合主键；计数、清零、统计筛选和排序只针对指定用户。
 当前用户没有统计记录时按零处理，仍能查询共享词库，查询不会初始化统计。
 审计字段记录当前数据库账号，与词库统计归属用户名分开。
@@ -105,7 +106,7 @@ ON CONFLICT (username) DO NOTHING;
 
 ## add_update_words
 
-`username` 与非空 `words` 对象数组直接传入，每个单词可独立指定 `action`。
+直接传入非空 `words` 对象数组，每个单词可独立指定 `action`。
 `action` 省略时为 `create`，明确指定 `update` 才允许修改已有单词；未知字段拒绝整批。
 
 - **新增**：`word`、`common_form`、`hiragana`、`meaning` 都必须为非空字符串；缺失、`null`、空字符串或纯空白字符串均报错。`update` 未找到已有单词时，也适用此要求。
@@ -120,7 +121,6 @@ ON CONFLICT (username) DO NOTHING;
 
 ```json
 {
-  "username": "ethan",
   "words": [
     {"word":"食べる","common_form":"食べる","hiragana":"たべる","meaning":"吃","tags":["v","v2"]}
   ]
@@ -131,7 +131,6 @@ ON CONFLICT (username) DO NOTHING;
 
 ```json
 {
-  "username": "ethan",
   "words": [
     {"word":"食べる","meaning":"吃；食用","tags":["v","v2"],"action":"update"}
   ]

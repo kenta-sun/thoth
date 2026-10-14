@@ -5,7 +5,6 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 from thoth.db.connection import DatabaseError
-from thoth.dto.request.common import Username
 from thoth.dto.request.add_update_words_request import WordWriteInput
 from thoth.dto.response.add_update_words_response import AddUpdateWordsResponse, WordWriteResult
 from thoth.dto.word import WordWriteCommand, WordBatchResult
@@ -16,7 +15,7 @@ ADD_UPDATE_WORDS_DESCRIPTION = """新增或局部更新共享日语词库中的�
 按原文精确匹配已有词，包括已标记删除的记录，不改变单词原文或记录状态。
 create 对已有词仍检查标签是否合法；update 对不存在的词按新增要求检查完整信息。
 找不到合适已有标签时不要提交，不得编造或随意选择标签。
-用户名必须已存在，可先调用 query_users 查询；格式错误拒绝整批，业务结果按输入顺序返回。"""
+格式错误拒绝整批，业务结果按输入顺序返回。"""
 
 
 def to_write_commands(words: list[WordWriteInput]) -> list[WordWriteCommand]:
@@ -36,12 +35,11 @@ def to_write_response(batch: WordBatchResult) -> AddUpdateWordsResponse:
 
 
 def add_update_words(
-    username: Username,
     words: Annotated[list[WordWriteInput], Field(min_length=1, description="待新增或更新的单词对象列表，至少一项；每项可独立指定 action。")],
 ) -> AddUpdateWordsResponse:
     """适配写入请求和响应；连接或整批业务失败转换为 MCP 工具错误。"""
     try:
-        batch = add_update_words_service.add_update_words(to_write_commands(words), username)
+        batch = add_update_words_service.add_update_words(to_write_commands(words))
         return to_write_response(batch)
     except (ValueError, DatabaseError) as exc:
         raise ToolError(str(exc)) from exc

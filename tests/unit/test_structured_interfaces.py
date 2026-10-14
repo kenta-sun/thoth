@@ -52,12 +52,13 @@ def test_protocol_structure_errors_never_enter_service(monkeypatch, name, servic
         cases += [["a", 1], ["a", None], ["a", {"word": "b"}], [True]]
 
     async def run():
+        base_args = {} if name == "add_update_words" else {"username": "tester"}
         async with Client(mcp) as client:
             for value in cases:
-                result = await client.call_tool_mcp(name, {"username": "tester", parameter: value})
+                result = await client.call_tool_mcp(name, {**base_args, parameter: value})
                 assert result.isError, (name, value)
-            assert (await client.call_tool_mcp(name, {"username": "tester", "text": "[]"})).isError
-            assert (await client.call_tool_mcp(name, {"username": "tester"})).isError
+            assert (await client.call_tool_mcp(name, {**base_args, "text": "[]"})).isError
+            assert (await client.call_tool_mcp(name, base_args)).isError
     asyncio.run(run())
     called.assert_not_called()
 
@@ -105,7 +106,7 @@ def test_every_tool_output_matches_schema_and_projection_keeps_null(monkeypatch)
                 elif name == "query_words":
                     args = {"username": "tester", "query": {"fields": ["meaning"]}}
                 elif name == "add_update_words":
-                    args = {"username": "tester", "words": [{"word": "a", "tags": ["v"]}]}
+                    args = {"words": [{"word": "a", "tags": ["v"]}]}
                 else:
                     args = {"username": "tester", "words": ["a"]}
                 result = await client.call_tool_mcp(name, args)

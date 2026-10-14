@@ -9,11 +9,10 @@ import psycopg
 import pytest
 from fastmcp import Client
 from thoth.db.connection import DatabaseError
-from thoth.dto.word import WordWriteCommand
 from thoth.dto.query_words import QueryRequest
 from thoth.common.query_words import QUERY_FIELDS
 
-from thoth.service import (add_update_words_service, query_words_service,
+from thoth.service import (query_words_service,
                           count_word_usage_service, count_word_miss_service,
                           reset_word_miss_service, query_users_service)
 from thoth.service.user_lookup_service import validate_username
@@ -22,7 +21,6 @@ from thoth.utils.generate_rebuild_sql import OUTPUT, render_rebuild_sql
 from tests.unit.test_word_repository import ScriptedConnection
 
 CASES = [
-    (add_update_words_service, "add_update_words", [WordWriteCommand(word="a", tags=("v",))]),
     (query_words_service, "query_words", QueryRequest(QUERY_FIELDS)),
     (count_word_usage_service, "count_word_usage", []),
     (count_word_miss_service, "count_word_miss", []),
