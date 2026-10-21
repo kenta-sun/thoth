@@ -14,7 +14,8 @@ ADD_UPDATE_WORDS_DESCRIPTION = """新增或局部更新共享日语词库中的�
 每项独立事务；单项业务失败不影响其他项。同批重复 word 的所有项均失败。
 按原文精确匹配已有词，包括已标记删除的记录，不改变单词原文或记录状态。
 create 对已有词仍检查标签是否合法；update 对不存在的词按新增要求检查完整信息。
-找不到合适已有标签时不要提交，不得编造或随意选择标签。
+update 省略 tags 时保留原标签；提供时替换全部标签，不接受 null 或空数组。
+新增或替换标签时找不到合适已有标签不要提交，不得编造或随意选择标签。
 格式错误拒绝整批，业务结果按输入顺序返回。"""
 
 
@@ -22,7 +23,7 @@ def to_write_commands(words: list[WordWriteInput]) -> list[WordWriteCommand]:
     """显式提取业务字段，避免请求模型及其序列化约定进入 Service。"""
     return [WordWriteCommand(
         word=item.word, common_form=item.common_form, hiragana=item.hiragana,
-        meaning=item.meaning, tags=tuple(item.tags), action=item.action,
+        meaning=item.meaning, tags=tuple(item.tags) if item.tags is not None else None, action=item.action,
     ) for item in words]
 
 

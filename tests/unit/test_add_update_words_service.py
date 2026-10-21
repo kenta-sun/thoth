@@ -152,11 +152,10 @@ def test_invalid_tags_fail_without_database_access(repository, tags, action):
     assert repository.connection.commits == 0
 
 
-@pytest.mark.parametrize("action", ["create", "update"])
-def test_missing_tags_is_rejected(repository, action):
+def test_create_missing_tags_is_rejected(repository):
     item = complete_word()
     del item["tags"]
-    item["action"] = action
+    item["action"] = "create"
     with pytest.raises(ValueError):
         save_items([item], repository)
     repository.find_existing_words.assert_not_called()
@@ -185,11 +184,15 @@ def test_create_preserves_entity_and_writes_tags_in_one_transaction(repository):
 @pytest.mark.parametrize("empty", [None, "", " \t\n"])
 def test_update_ignores_empty_information_and_preserves_nonempty_text(repository, empty):
     repository.find_existing_words.return_value = [WordEntity(word=" 食べる ")]
+    repository.connection.links = {7: ["v", "v2"], 8: ["n"]}
     result = save_items([{"word": " 食べる ", "common_form": empty, "meaning": " 吃 ",
-                          "tags": ["v"], "action": "update"}], repository)
+                          "action": "update"}], repository)
     repository.update.assert_called_once_with(WordEntity(word=" 食べる ", meaning=" 吃 "))
     assert result.results[0].status == "updated"
-    assert repository.connection.links == {7: ["v"]}
+    assert repository.connection.links == {7: ["v", "v2"], 8: ["n"]}
+    repository.tags_mapper.find_by_codes.assert_not_called()
+    repository.links_mapper.delete_by_word_id.assert_not_called()
+    repository.links_mapper.insert_many.assert_not_called()
 
 
 def test_tags_only_update_and_identical_lists_always_replace(repository):
@@ -325,7 +328,7 @@ def test_one_lookup_covers_90_new_words_and_10_partial_updates(repository):
     words = [f"単語{index:03d}" for index in range(100)]
     existing = set(words[::10])
     repository.find_existing_words.return_value = [WordEntity(word=word) for word in existing]
-    items = [{"word": word, "meaning": "更新", "tags": ["v"], "action": "update"}
+    items = [{"word": word, "meaning": "更新", "action": "update"}
              if word in existing else complete_word(word) for word in words]
     result = save_items(items, repository)
     repository.find_existing_words.assert_called_once_with(words)
@@ -350,3 +353,53 @@ def test_invalid_word_does_not_disrupt_valid_item(repository, word):
     assert [row.status for row in result.results] == ["failed", "created"]
     repository.find_existing_words.assert_called_once_with(["飲む"])
     json.dumps(serialize_word_batch(result), ensure_ascii=False).encode("utf-8")
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_update_missing_word_without_tags_reports_missing_fields_and_continues(repository, complete):
+    """update 转新增仍要求标签，并与缺失的信息字段一起逐项报告。"""
+    item = complete_word() if complete else {"word": "食べる"}
+    item.pop("tags", None)
+    item["action"] = "update"
+    result = save_items([item, complete_word("飲む")], repository)
+    assert [row.status for row in result.results] == ["failed", "created"]
+    expected = ("tags",) if complete else ("common_form", "hiragana", "meaning", "tags")
+    assert result.results[0].fields == expected
+    assert serialize_word_batch(result)["results"][0]["fields"] == list(expected)
+    repository.insert.assert_called_once()
+    assert repository.insert.call_args.args[0].word == "飲む"
+    repository.update.assert_not_called()
+    assert repository.connection.rollbacks == repository.connection.commits == 1
+
+
+def test_update_supplied_tags_replaces_different_existing_tags(repository):
+    """显式标签集合整体替换旧标签，不合并，也不影响其他单词。"""
+    repository.find_existing_words.return_value = [WordEntity(word="食べる")]
+    repository.connection.links = {7: ["n", "adv"], 8: ["n"]}
+    result = save_items([{"word": "食べる", "tags": ["v", "v2"], "action": "update"}], repository)
+    assert result.results[0].status == "updated"
+    assert repository.connection.links == {7: ["v", "v2"], 8: ["n"]}
+
+
+@pytest.mark.parametrize("phase", ["word", "commit"])
+def test_update_without_tags_failure_rolls_back_and_preserves_tags(repository, phase):
+    """省略标签的更新仍遵守单项事务，写入或提交失败均恢复原记录。"""
+    connection = repository.connection
+    old = WordEntity(id=7, word="食べる", meaning="旧释义")
+    connection.words = {"食べる": old}
+    connection.links = {7: ["v", "v2"]}
+    repository.find_existing_words.return_value = [old]
+    error = psycopg.errors.CheckViolation("secret")
+    if phase == "word":
+        repository.update.side_effect = error
+    else:
+        connection.commit_error = error
+    result = save_items([{"word": "食べる", "meaning": "新释义", "action": "update"}], repository)
+    assert result.results[0].status == "failed"
+    assert "secret" not in result.results[0].reason
+    assert connection.words == {"食べる": old}
+    assert connection.links == {7: ["v", "v2"]}
+    assert connection.rollbacks == 1 and connection.commits == 0
+    repository.tags_mapper.find_by_codes.assert_not_called()
+    repository.links_mapper.delete_by_word_id.assert_not_called()
+    repository.links_mapper.insert_many.assert_not_called()

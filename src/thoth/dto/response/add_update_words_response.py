@@ -13,7 +13,7 @@ class WordWriteResult(OmitNoneResponse):
     word: str | None = Field(description="单词原文；无法安全输出时为 null。")
     status: Literal["created", "updated", "skipped", "failed"] = Field(description="created 已新增，updated 已更新，skipped 已跳过，failed 保存失败。")
     reason: str | None = Field(default=None, description="跳过或失败原因；无说明时省略。")
-    fields: list[Literal["common_form", "hiragana", "meaning"]] | None = Field(default=None, description="实际新增时缺少的信息字段；其他情况省略。")
+    fields: list[Literal["common_form", "hiragana", "meaning", "tags"]] | None = Field(default=None, description="实际新增时缺少的信息字段或 tags；其他情况省略。")
 
 
 class AddUpdateWordsResponse(ResponseModel):

@@ -16,7 +16,7 @@ class WordWriteCommand:
     """承载结构已校验的写入指令，供业务层归一化信息并构造表实体。"""
 
     word: str  # 单词原文，业务层检查非空与数据库可写入性。
-    tags: tuple[str, ...]  # 完整标签集合，业务层按首次出现顺序去重。
+    tags: tuple[str, ...] | None = None  # 完整标签集合，按首次出现顺序去重；None 表示更新时保留原标签。
     common_form: str | None = None  # 常见写法；None 或空白表示更新时忽略。
     hiragana: str | None = None  # 平假名读音；None 或空白表示更新时忽略。
     meaning: str | None = None  # 中文释义；None 或空白表示更新时忽略。
@@ -29,8 +29,8 @@ class WordInput:
 
     # 单词记录；有效输入保留本次提供的字段，错误项仅保留可输出的 word。
     entity: WordEntity
-    # 完整的新标签编码集合；有效请求至少一个且已去重，错误项默认为空。
-    tags: tuple[str, ...] = ()
+    # 完整的新标签编码集合，提供时非空且已去重；None 表示省略，实际新增时须补齐。
+    tags: tuple[str, ...] | None = None
     # create 表示不覆盖已有词，update 表示局部更新；默认 create。
     action: Literal["create", "update"] = "create"
     # 逐项输入错误；None 表示输入校验通过，仍需检查批内重复和保存条件。

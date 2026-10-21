@@ -63,7 +63,7 @@ def validate_word_input(item: WordWriteCommand) -> WordInput:
     """检查业务文本、归一化信息字段并去重标签，构造单词实体。
 
     请求结构由入口校验；None 或纯空白信息表示更新时忽略，非空原文保持不变。
-    新增完整性和标签存在性在实际保存时检查。
+    标签为 None 表示更新时保留原标签；新增完整性和标签存在性在实际保存时检查。
     """
     if not item.word.strip():
         raise ValueError("word 必填，且必须是非空字符串。")
@@ -76,7 +76,7 @@ def validate_word_input(item: WordWriteCommand) -> WordInput:
             meaning=_information_value(item.meaning, "meaning"),
         ),
         action=item.action,
-        tags=tuple(dict.fromkeys(item.tags)),
+        tags=tuple(dict.fromkeys(item.tags)) if item.tags is not None else None,
     )
 
 
@@ -146,26 +146,28 @@ def _database_error(message: str, exc: psycopg.Error) -> DatabaseError:
     return DatabaseError(f"{message}{code}，请稍后重试。")
 
 
-def _validate_new_word_fields(entity: WordEntity) -> None:
-    """检查已归一化的新增信息，None 表示未提供，缺失时抛出 MissingWordFieldsError。"""
+def _validate_new_word_fields(entity: WordEntity, tags: tuple[str, ...] | None) -> None:
+    """检查新增信息及非空标签，缺失时汇总为 MissingWordFieldsError。"""
     missing = tuple(
         name for name in INFORMATION_FIELDS
         if getattr(entity, name) is None
     )
+    if not tags:
+        missing += ("tags",)
     if missing:
         raise MissingWordFieldsError(missing)
 
 
 def _insert_word_record(
-    entity: WordEntity, repository: WordTblMapper
+    request: WordInput, repository: WordTblMapper
 ) -> SaveResult | None:
     """在当前事务内校验新增字段并插入，成功返回 created，同名并发冲突返回 None。
 
     create 和 update 的首次新增共用此流程；字段缺失或数据库错误向上传递，
     冲突后的跳过或更新由调用方按业务场景决定。
     """
-    _validate_new_word_fields(entity)
-    inserted = repository.insert(entity)
+    _validate_new_word_fields(request.entity, request.tags)
+    inserted = repository.insert(request.entity)
     if inserted is None:
         return None
     return SaveResult("created", entity=inserted)
@@ -196,7 +198,7 @@ def _save_word_record(
         if exists:
             return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
         else:
-            inserted = _insert_word_record(request.entity, repository)
+            inserted = _insert_word_record(request, repository)
             if inserted is None:
                 # 并发新增冲突时跳过，不覆盖已有记录。
                 return SaveResult("skipped", "单词已存在，未覆盖已有信息。")
@@ -206,7 +208,7 @@ def _save_word_record(
         if exists:
             return _update_word_record(request.entity, repository)
         else:
-            inserted = _insert_word_record(request.entity, repository)
+            inserted = _insert_word_record(request, repository)
             if inserted is None:
                 # 并发新增冲突时，按 update 语义更新当前记录。
                 return _update_word_record(request.entity, repository)
@@ -227,10 +229,10 @@ def _save_word_item(
     """以单个单词为事务边界保存信息和完整标签列表，提交后才返回成功。
 
     调用方须提供无外层事务的 autocommit 连接，各 Mapper 必须共用该连接。
-    先检查标签存在性，再保存单词；新增或更新成功后替换该词全部标签。
+    提供标签时先检查存在性，再保存单词并替换全部标签；省略时只更新单词信息。
 
     Args:
-        request: 已通过输入校验和批内查重的请求，包含完整标签列表。
+        request: 已通过输入校验和批内查重的请求；标签列表为 None 表示更新时保留原标签。
         repository: 单词表读写对象。
         tag_mapper: 标签字典查询对象。
         word_tag_mapper: 单词标签关联写入对象。
@@ -247,26 +249,28 @@ def _save_word_item(
     """
     try:
         with connection.transaction():
-            # 即使 create 将跳过已有词，也要求传入的标签全部合法且存在。
-            existing_tags = {
-                tag.code for tag in tag_mapper.find_by_codes(list(request.tags))
-            }
-            missing_tags = [code for code in request.tags if code not in existing_tags]
-            if missing_tags:
-                raise ValueError(f"标签不存在：{', '.join(missing_tags)}。请使用已有的合适标签。")
+            # 省略标签时不查询或改写关联；显式提供时，即使 create 将跳过也须校验。
+            if request.tags is not None:
+                existing_tags = {
+                    tag.code for tag in tag_mapper.find_by_codes(list(request.tags))
+                }
+                missing_tags = [code for code in request.tags if code not in existing_tags]
+                if missing_tags:
+                    raise ValueError(f"标签不存在：{', '.join(missing_tags)}。请使用已有的合适标签。")
             saved = _save_word_record(request, repository, exists=exists)
             if saved.status != "skipped":
                 if saved.entity is None or saved.entity.id is None:
                     raise DatabaseError("保存单词未返回有效 ID，请重试。")
-                # 一律删除后重建，不做差量合并；删除及所有插入与单词写入共同回滚。
-                word_id = saved.entity.id
-                word_tag_mapper.delete_by_word_id(word_id)
-                word_tag_mapper.insert_many([
-                    WordTagEntity(
-                        word_id=word_id, tag_code=code,
-                    )
-                    for code in request.tags
-                ])
+                if request.tags is not None:
+                    # 显式提供标签时删除后重建，不做差量合并；与单词写入共同回滚。
+                    word_id = saved.entity.id
+                    word_tag_mapper.delete_by_word_id(word_id)
+                    word_tag_mapper.insert_many([
+                        WordTagEntity(
+                            word_id=word_id, tag_code=code,
+                        )
+                        for code in request.tags
+                    ])
         return WordItemResult(
             index=index, word=request.entity.word,
             status=saved.status, reason=saved.reason,

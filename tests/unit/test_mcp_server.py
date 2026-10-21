@@ -109,6 +109,9 @@ def test_tools_are_exposed_and_save_description_explains_default(backend):
     assert words["type"] == "array" and words["minItems"] == 1
     item = words["items"]
     assert item["additionalProperties"] is False
+    assert "tags" not in item["required"]
+    assert item["properties"]["tags"]["type"] == "array"
+    assert item["properties"]["tags"]["minItems"] == 1
     assert item["properties"]["action"]["default"] == "create"
     for field in ("word", "common_form", "hiragana", "meaning", "action", "tags"):
         assert item["properties"][field]["description"]
@@ -191,7 +194,7 @@ def test_batch_lookup_failure_is_protocol_error_without_writes(backend):
     backend.repository.find_existing_words.side_effect = DatabaseError("查询单词失败，请稍后重试。")
     result = call_add_update_words([
         {"tags": ["v"], "word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃"},
-        {"tags": ["v"], "word": "飲む", "meaning": "喝", "action": "update"},
+        {"word": "飲む", "meaning": "喝", "action": "update"},
     ])
 
     assert result.isError is True
@@ -242,5 +245,31 @@ def test_required_tags_failure_rejects_batch_without_config(backend, tags):
     assert result.isError is True
     backend.get_settings.assert_not_called()
     backend.repository.find_existing_words.assert_not_called()
+    backend.repository.insert.assert_not_called()
+    backend.repository.update.assert_not_called()
+
+
+def test_update_without_tags_reaches_service_and_preserves_links(backend):
+    """通过 MCP 验证省略标签可更新已有单词，且不调用标签查询或写入。"""
+    backend.repository.find_existing_words.return_value = [WordEntity(word="食べる")]
+    result = call_add_update_words([{"word": "食べる", "meaning": "吃；食用", "action": "update"}])
+    assert result.isError is False
+    assert result.structuredContent == {"results": [{"index": 0, "word": "食べる", "status": "updated"}]}
+    backend.repository.update.assert_called_once_with(WordEntity(word="食べる", meaning="吃；食用"))
+    backend.repository.insert.assert_not_called()
+    add_update_words_service.TagTblMapper.return_value.find_by_codes.assert_not_called()
+    add_update_words_service.WordTagTblMapper.return_value.delete_by_word_id.assert_not_called()
+    add_update_words_service.WordTagTblMapper.return_value.insert_many.assert_not_called()
+
+
+def test_update_missing_word_without_tags_returns_item_failure(backend):
+    """MCP 接受省略标签的 update，但实际新增缺少标签时返回逐项失败。"""
+    result = call_add_update_words([{
+        "word": "食べる", "common_form": "食べる", "hiragana": "たべる",
+        "meaning": "吃", "action": "update",
+    }])
+    assert result.isError is False
+    row = result.structuredContent["results"][0]
+    assert row["status"] == "failed" and row["fields"] == ["tags"]
     backend.repository.insert.assert_not_called()
     backend.repository.update.assert_not_called()
