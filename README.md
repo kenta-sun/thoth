@@ -188,7 +188,7 @@ updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipp
 | --- | --- | --- |
 | `where` | 条件对象，各字段和同字段的多个操作均按 AND 组合 | 无额外条件 |
 | `fields` | 返回字段数组 | 全部七个业务字段 |
-| `sort` | 按优先级排列的 `[{"field":字段,"direction":"asc"或"desc"}]` | 单词 ID 升序 |
+| `sort` | 按优先级排列的 `[{"field":字段,"direction":"asc"或"desc"}]` | 不生成结果排序子句 |
 | `limit` | BIGINT 范围内的正整数 | 返回全部匹配结果，不静默截断 |
 
 | 业务字段 | 支持的筛选 |
@@ -198,7 +198,9 @@ updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipp
 | `tags` | `in`，拥有任意指定编码，不推断标签层级 |
 | `usage_count`、`miss_count` | `eq`、`in`、`gt/gte/lt/lte`；值为 BIGINT 范围内非负整数 |
 
-除 `tags` 外均可排序，排序并列追加单词 ID 升序。筛选和排序使用的字段不必返回。
+除 `tags` 外均可排序，不自动追加单词 ID 排序。筛选和排序使用的字段不必返回。
+`sort` 另支持 `{"field":"random"}`，可省略 direction；显式 asc 或 desc 均为随机顺序。
+排序按列表优先级组合，例如先按陌生次数降序，再 random，表示相同陌生次数内部随机。
 字符串原文匹配，不自动修剪空白或转换写法。相等条件使用对象，例如 `{"word":{"eq":"食べる"}}`，不接受直接值简写。
 不支持跨字段 OR、分页、聚合或调用方指定 SQL、表名和关联。
 
@@ -223,7 +225,9 @@ updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipp
 }
 ```
 
-查询全部单词传 `{"username":"ethan","query":{}}`。每个排序对象的 `field` 和 `direction` 均必填。
+查询全部单词传 `{"username":"ethan","query":{}}`。普通排序的 `field` 和 `direction` 均必填；random 的 direction 可省略。
+随机抽取最多 100 个单词传 `{"username":"ethan","query":{"sort":[{"field":"random"}],"limit":100}}`。
+先筛选再随机排序，最后限量；不传 sort 不保证顺序，也不代表随机抽取。
 条件对象可同时包含多个支持的操作，例如 `{"miss_count":{"gte":3,"lt":10}}`。
 
 `like` 原样使用 PostgreSQL `LIKE`：`"食%"` 匹配开头，`"%る"` 匹配结尾，`"%食%"` 匹配包含，

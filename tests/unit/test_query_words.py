@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import jsonschema
 import psycopg
 import pytest
 from fastmcp import Client
@@ -36,7 +37,8 @@ def test_default_query_and_single_field_projection():
     assert request.fields == QUERY_FIELDS and request.limit is None
     query = build({})
     assert "w.status_code <> 'D'" in query.sql and "LIMIT" not in query.sql
-    assert query.sql.endswith("ORDER BY w.id ASC")
+    assert "\nORDER BY " not in query.sql
+    assert "w.id ASC" not in query.sql
     assert "COALESCE(u.usage_count, 0)" in query.sql
     assert "COALESCE(m.miss_count, 0)" in query.sql
     assert "EXISTS" not in query.sql
@@ -61,10 +63,54 @@ def test_combination_binds_values_and_joins_unprojected_sort_and_filter():
     assert "w.common_form LIKE %(p0)s" in query.sql
     assert "COALESCE(u.usage_count, 0) >= %(p2)s" in query.sql
     assert "COALESCE(u.usage_count, 0) <= %(p3)s" in query.sql
-    assert "ORDER BY COALESCE(m.miss_count, 0) DESC, COALESCE(u.usage_count, 0) ASC, w.id ASC" in query.sql
+    assert "ORDER BY COALESCE(m.miss_count, 0) DESC, COALESCE(u.usage_count, 0) ASC\nLIMIT %(limit)s" in query.sql
     assert query.sql.endswith("LIMIT %(limit)s")
     assert query.sql.count("LEFT JOIN word_usage_tbl") == 1
     assert query.sql.count("LEFT JOIN word_miss_tbl") == 1
+
+
+@pytest.mark.parametrize("direction", [None, "asc", "desc"])
+def test_random_sort_mapping_sql_and_schema(direction):
+    """随机排序无需方向，不触发无关关联，先筛选排序再绑定限量。"""
+    item = {"field": "random"}
+    if direction is not None:
+        item["direction"] = direction
+    raw = {"fields": ["word"], "where": {"word": {"in": ["a", "b"]}},
+           "sort": [item], "limit": 100}
+    jsonschema.validate(raw, WordQueryInput.model_json_schema())
+    request = to_query_request(WordQueryInput.model_validate(raw))
+    assert request.sort == (("random", direction),)
+    query = build(raw)
+    suffix = "" if direction is None else " " + direction.upper()
+    assert query.sql.endswith("ORDER BY random()" + suffix + "\nLIMIT %(limit)s")
+    assert query.sql.index("WHERE") < query.sql.index("ORDER BY")
+    assert query.params == {"p0": ["a", "b"], "limit": 100}
+    assert "JOIN" not in query.sql and "w.id" not in query.sql
+
+
+def test_no_sort_with_limit_and_mixed_random_priority():
+    """限量不隐式排序，组合排序保留调用方指定的优先级。"""
+    query = build({"fields": ["word"], "limit": 100})
+    assert "ORDER BY" not in query.sql
+    assert query.sql.endswith("LIMIT %(limit)s") and query.params == {"limit": 100}
+    query = build({"fields": ["word"], "sort": [
+        {"field": "miss_count", "direction": "desc"}, {"field": "random"}]})
+    assert query.sql.endswith("ORDER BY COALESCE(m.miss_count, 0) DESC, random()")
+    assert query.sql.count("LEFT JOIN word_miss_tbl") == 1
+    assert "word_usage_tbl" not in query.sql
+
+
+@pytest.mark.parametrize("item", [
+    {"field": "word"}, {"field": "random", "direction": None},
+    {"field": "random", "direction": "invalid"}, {"field": "random()"},
+])
+def test_sort_schema_and_runtime_reject_invalid_options(item):
+    """公开 Schema 与运行时均拒绝普通排序缺方向及非法随机选项。"""
+    raw = {"sort": [item]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(raw, WordQueryInput.model_json_schema())
+    with pytest.raises(ValueError):
+        WordQueryInput.model_validate(raw)
 
 
 @pytest.mark.parametrize("field,operation,value,fragment", [
@@ -100,6 +146,8 @@ def test_exact_values_and_empty_text_are_preserved():
     {"where": {"miss_count": {"like": "%"}}}, {"where": {"common_form": {"like": []}}},
     {"fields": []}, {"fields": None}, {"fields": "word"}, {"fields": [{}]},
     {"fields": ["created_at"]}, {"fields": ["word", "word"]},
+    {"sort": [{"field": "random"}, {"field": "random"}]},
+    {"fields": ["random"]}, {"where": {"random": {"eq": "a"}}},
     {"sort": []}, {"sort": None}, {"sort": [{"field": "tags", "direction": "asc"}]},
     {"sort": [{"field": "word", "direction": "ASC"}]}, {"sort": [["word", {}]]}, {"sort": [1]},
     {"sort": [{"field": "word", "direction": "asc"}, {"field": "word", "direction": "desc"}]}, {"sort": [{"field": "created_at", "direction": "desc"}]},
@@ -125,6 +173,9 @@ def test_query_requires_native_object(text):
     QueryRequest(("word",), (QueryCondition("word", "like", "%"),)),
     QueryRequest(("word",), sort=(("word", "desc; SELECT 1"),)),
     QueryRequest(("word",), sort=(("tags", "asc"),)),
+    QueryRequest(("word",), sort=(("random", "asc; SELECT 1"),)),
+    QueryRequest(("word",), sort=(("word", None),)),
+    QueryRequest(("word",), sort=(("random()", None),)),
     QueryRequest(("word",), limit=True),
 ])
 def test_builder_rechecks_sql_structure(query_request):
@@ -165,6 +216,11 @@ def test_protocol_schema_response_and_errors(monkeypatch):
             assert (await client.call_tool_mcp("query_words", {"username": "tester", "text": {}})).isError
             result = await client.call_tool_mcp("query_words", {"username": "tester", "query": {}})
             assert not result.isError and result.structuredContent == {"results": []}
+            result = await client.call_tool_mcp("query_words", {"username": "tester", "query": {
+                "fields": ["word"], "sort": [{"field": "random"}], "limit": 100}})
+            assert not result.isError and result.structuredContent == {"results": []}
+            request = mapper.query_words.call_args.args[0]
+            assert request.sort == (("random", None),) and request.limit == 100
             mapper.query_words.side_effect = psycopg.errors.UndefinedTable("private SQL or credentials")
             result = await client.call_tool_mcp("query_words", {"username": "tester", "query": {}})
             assert result.isError and "private SQL" not in str(result)

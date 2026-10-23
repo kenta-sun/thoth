@@ -16,9 +16,9 @@ def build_query(request: QueryRequest, spec: QuerySqlSpec) -> BuiltQuery:
     Args:
         request: Service 已完成值类型和协议校验的请求。fields 指定返回字段
             及顺序；conditions 为空时只保留固定筛选条件，否则全部以 AND
-            连接；sort 为空时只使用固定末级排序；limit 为 None 时不限数量。
+            连接；sort 为空时不生成排序子句；limit 为 None 时不限数量。
         spec: Mapper 提供的可信 SQL 配置，定义字段表达式、关联依赖、固定
-            筛选和末级排序，不能由请求或外部 JSON 构造。
+            筛选，不能由请求或外部 JSON 构造。
 
     Returns:
         BuiltQuery 对象，其中 sql 含 psycopg 命名占位符，params 保存对应
@@ -33,7 +33,7 @@ def build_query(request: QueryRequest, spec: QuerySqlSpec) -> BuiltQuery:
         raise ValueError("fields 不能为空。")
     referenced = set(request.fields)
     referenced.update(condition.field for condition in request.conditions)
-    referenced.update(name for name, _ in request.sort)
+    referenced.update(name for name, _ in request.sort if name != "random")
     if not referenced <= spec.fields.keys():
         raise ValueError("查询包含不支持的字段。")
     # 2. 汇总各字段声明的关联依赖，同一个关联只添加一次。
@@ -73,15 +73,20 @@ def build_query(request: QueryRequest, spec: QuerySqlSpec) -> BuiltQuery:
         params[key] = list(condition.value) if condition.operator == "in" else condition.value
     # 每个条件单独加括号，保留配置表达式内部的逻辑分组，再要求所有条件同时满足。
     parts.append("WHERE " + " AND ".join(f"({item})" for item in conditions))
-    # 4. 按请求顺序确定排序优先级；字段需允许排序，方向只能为 asc 或 desc。
+    # 4. 只生成显式请求的排序；random 是固定表达式，不参与字段或关联查找。
     ordering = []
     for name, direction in request.sort:
-        if not spec.fields[name].sortable or direction not in {"asc", "desc"}:
-            raise ValueError("查询包含不支持的排序。")
-        ordering.append(f"{spec.fields[name].expression} {direction.upper()}")
-    # 末尾补固定排序（如主键升序），使前面排序值相同的记录仍有确定的顺序；
-    # 未指定 sort 时，也依靠这个末级排序生成 ORDER BY。
-    parts.append("ORDER BY " + ", ".join([*ordering, spec.tie_breaker]))
+        if name == "random":
+            if direction not in {None, "asc", "desc"}:
+                raise ValueError("查询包含不支持的排序。")
+            ordering.append("random()" + (f" {direction.upper()}" if direction else ""))
+        else:
+            if not spec.fields[name].sortable or direction not in {"asc", "desc"}:
+                raise ValueError("查询包含不支持的排序。")
+            ordering.append(f"{spec.fields[name].expression} {direction.upper()}")
+    # 不追加主键排序；未指定 sort 时省去结果排序，LIMIT 直接作用于筛选结果。
+    if ordering:
+        parts.append("ORDER BY " + ", ".join(ordering))
     # 5. 仅在指定数量时添加 LIMIT，数量同样使用参数绑定。
     # 精确检查 int 类型，是因为 Python 的 bool 也是 int 子类，但不是合法数量。
     if request.limit is not None:

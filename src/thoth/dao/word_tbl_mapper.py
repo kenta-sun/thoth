@@ -15,7 +15,7 @@ from thoth.utils.sql_query_builder import build_query
 # 主表固定排除删除记录；统计按需 LEFT JOIN，缺失行在所有表达式中统一按零处理。
 # 标签通过相关子查询投影、EXISTS 筛选，均不扩大主表行数，LIMIT 仍按单词计数。
 WORD_QUERY_SPEC = QuerySqlSpec(
-    source="word_tbl AS w", predicate="w.status_code <> 'D'", tie_breaker="w.id ASC",
+    source="word_tbl AS w", predicate="w.status_code <> 'D'",
     fields=MappingProxyType({
         **{name: SqlField(f"w.{name}", QUERY_OPERATORS[name]) for name in TEXT_FIELDS},
         "tags": SqlField(

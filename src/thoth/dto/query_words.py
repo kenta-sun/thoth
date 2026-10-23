@@ -21,7 +21,7 @@ class QueryRequest:
 
     fields: tuple[str, ...]  # 需要返回的业务字段，顺序与请求一致。
     conditions: tuple[QueryCondition, ...] = ()  # 空元组表示没有额外筛选。
-    sort: tuple[tuple[str, str], ...] = ()  # 按优先级排列的字段和方向。
+    sort: tuple[tuple[str, str | None], ...] = ()  # 按优先级排列的字段和方向；仅 random 可用 None，空元组不排序。
     limit: int | None = None  # None 表示不限数量；其余值必须为正整数。
 
 
@@ -42,7 +42,6 @@ class QuerySqlSpec:
 
     source: str  # 固定主表及别名。
     predicate: str  # 不允许请求覆盖的固定筛选条件。
-    tie_breaker: str  # 保证排序稳定的固定末级排序表达式。
     fields: Mapping[str, SqlField]  # 允许查询的业务字段白名单。
     joins: Mapping[str, str]  # 固定关联 SQL，按配置顺序输出。
 

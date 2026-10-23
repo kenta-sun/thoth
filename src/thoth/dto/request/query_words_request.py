@@ -111,7 +111,14 @@ class WordSortInput(QueryModel):
     """指定一个排序字段与方向；列表顺序代表排序优先级。"""
 
     field: SortField = Field(description="排序业务字段，不支持标签数组排序。")
-    direction: Literal["asc", "desc"] = Field(description="asc 升序，desc 降序；同值最终按单词 ID 升序。")
+    direction: Literal["asc", "desc"] = Field(description="asc 升序，desc 降序；同值记录不追加固定排序。")
+
+
+class RandomSortInput(QueryModel):
+    """按随机值排序；可省略方向，与普通排序按列表顺序组合。"""
+
+    field: Literal["random"] = Field(description="随机排序选项，由后端转换为 random()，不属于返回或筛选字段。")
+    direction: Literal["asc", "desc"] | SkipJsonSchema[None] = Field(default=None, description="可省略，默认按随机值升序；显式 asc 或 desc 均产生随机顺序，不允许 null。")
 
 
 class WordQueryInput(QueryModel):
@@ -119,7 +126,7 @@ class WordQueryInput(QueryModel):
 
     where: WordWhereInput = Field(default_factory=WordWhereInput, description="同时满足的筛选条件；省略或空对象不增加筛选。")
     fields: list[QueryField] = Field(default_factory=lambda: list(QUERY_FIELDS), min_length=1, description="返回字段，省略则返回全部业务字段；不允许重复。")
-    sort: list[WordSortInput] = Field(default_factory=list, min_length=1, description="按优先级排序；省略时按单词 ID 升序，显式数组不得为空或重复字段。")
+    sort: list[WordSortInput | RandomSortInput] = Field(default_factory=list, min_length=1, description="按列表优先级排序；省略时不指定结果顺序。random 可省略 direction；普通字段必须指定方向，显式数组不得为空或重复字段。")
     limit: Annotated[int, Field(ge=1, le=9223372036854775807, strict=True)] | SkipJsonSchema[None] = Field(default=None, description="最大返回条数，省略时不限数量。")
 
     @model_validator(mode="after")

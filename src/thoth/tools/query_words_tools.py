@@ -14,7 +14,8 @@ from thoth.service import query_words_service
 QUERY_WORDS_DESCRIPTION = """查询未删除的日语单词，不修改数据。
 使用次数和陌生次数按指定用户隔离，无统计记录按零参与筛选、排序和返回。
 各字段及同字段多个操作均为 AND；筛选和排序字段不必出现在返回字段中。
-排序并列最终按单词 ID 升序；只返回选中的业务字段，无匹配返回空数组。
+省略 sort 不指定结果顺序；显式 field=random 随机排序，可省略 direction，排序后再限量。
+只返回选中的业务字段，无匹配返回空数组。
 用户名必须已存在，可先调用 query_users 查询。"""
 
 

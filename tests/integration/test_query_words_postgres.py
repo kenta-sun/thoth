@@ -55,12 +55,12 @@ def test_defaults_and_projection_do_not_write_statistics(query_database):
     with query_database() as connection:
         before = [connection.execute(f"SELECT * FROM {table} ORDER BY word_id").fetchall()
                   for table in ("word_usage_tbl", "word_miss_tbl")]
-    rows = query({})
+    rows = sorted(query({}), key=lambda row: row["word"])
     assert [row["word"] for row in rows] == ["a", "b", "c", "d", "literal"]
     assert rows[0] == {"word": "a", "common_form": "食べる", "hiragana": "a", "meaning": "a",
                        "tags": ["v", "v2"], "usage_count": 0, "miss_count": 4}
     assert rows[1]["miss_count"] == 0 and rows[-1]["tags"] == []
-    assert query({"fields": ["common_form"], "limit": 1}) == [{"common_form": "食べる"}]
+    assert query({"fields": ["common_form"], "sort": [{"field": "word", "direction": "asc"}], "limit": 1}) == [{"common_form": "食べる"}]
     assert query({"where": {"word": {"eq": "deleted"}}}) == []
     assert query({"where": {"word": {"in": ["missing", "a"]}}, "fields": ["word"]}) == [{"word": "a"}]
     assert query({"where": {"word": {"eq": "'; DROP TABLE word_tbl; --"}}}) == []
@@ -71,7 +71,7 @@ def test_defaults_and_projection_do_not_write_statistics(query_database):
 
 
 def test_ranking_missing_statistics_and_range_filters(query_database):
-    assert query({"fields": ["word"], "sort": [{"field": "usage_count", "direction": "asc"}], "limit": 2}) == [
+    assert query({"fields": ["word"], "sort": [{"field": "usage_count", "direction": "asc"}, {"field": "word", "direction": "asc"}], "limit": 2}) == [
         {"word": "a"}, {"word": "c"}]
     assert query({"fields": ["word"], "sort": [{"field": "usage_count", "direction": "desc"}], "limit": 2}) == [
         {"word": "b"}, {"word": "d"}]
@@ -80,12 +80,12 @@ def test_ranking_missing_statistics_and_range_filters(query_database):
     assert query({"fields": ["word"], "where": {"usage_count": {"gte": 0, "lte": 0}},
                   "sort": [{"field": "usage_count", "direction": "asc"}, {"field": "miss_count", "direction": "desc"}]}) == [
         {"word": "a"}, {"word": "c"}, {"word": "literal"}]
-    assert query({"fields": ["word"], "where": {"miss_count": {"in": [0]}}}) == [
+    assert sorted(query({"fields": ["word"], "where": {"miss_count": {"in": [0]}}}), key=lambda row: row["word"]) == [
         {"word": "b"}, {"word": "literal"}]
 
 
 def test_tag_membership_has_no_duplicates_or_implicit_hierarchy(query_database):
-    assert query({"fields": ["word"], "where": {"tags": {"in": ["v", "v2"]}}, "limit": 2}) == [
+    assert sorted(query({"fields": ["word"], "where": {"tags": {"in": ["v", "v2"]}}, "limit": 2}), key=lambda row: row["word"]) == [
         {"word": "a"}, {"word": "c"}]
     assert query({"fields": ["word"], "where": {"tags": {"in": ["v"]}}}) == [{"word": "a"}]
     assert query({"fields": ["word"], "where": {"tags": {"in": ["unknown"]}}}) == []
@@ -100,7 +100,7 @@ def test_tag_membership_has_no_duplicates_or_implicit_hierarchy(query_database):
     (r"a\%b\_c", ["literal"]), ("%'; SELECT 1; --%", []),
 ])
 def test_native_like_patterns(query_database, pattern, words):
-    assert query({"fields": ["word"], "where": {"common_form": {"like": pattern}}}) == [
+    assert sorted(query({"fields": ["word"], "where": {"common_form": {"like": pattern}}}), key=lambda row: row["word"]) == [
         {"word": word} for word in words]
 
 
@@ -108,3 +108,18 @@ def test_like_combines_with_in_and_unprojected_sort(query_database):
     assert query({"fields": ["common_form"], "where": {
         "common_form": {"in": ["食事", "食う", "学校"], "like": "食%"}},
         "sort": [{"field": "usage_count", "direction": "desc"}]}) == [{"common_form": "食事"}, {"common_form": "食う"}]
+
+
+def test_random_selection_respects_filter_limit_and_uniqueness(query_database):
+    """验证真实 SQL 抽样范围与条数，不用概率性断言要求两次顺序不同。"""
+    raw = {"fields": ["word"], "where": {"tags": {"in": ["v", "v2", "n"]}},
+           "sort": [{"field": "random"}], "limit": 3}
+    rows = query(raw)
+    words = [row["word"] for row in rows]
+    assert len(words) == len(set(words)) == 3
+    assert set(words) <= {"a", "b", "c", "d"}
+    rows = query({**raw, "limit": 100})
+    assert len(rows) == 4 and {row["word"] for row in rows} == {"a", "b", "c", "d"}
+    rows = query({"fields": ["word", "miss_count"], "sort": [
+        {"field": "miss_count", "direction": "desc"}, {"field": "random"}]})
+    assert [row["miss_count"] for row in rows] == [9, 4, 2, 0, 0]
