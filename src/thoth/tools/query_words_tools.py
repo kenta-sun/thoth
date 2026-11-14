@@ -12,7 +12,7 @@ from thoth.dto.query_words import QueryCondition, QueryRequest, QueryWordResult 
 from thoth.service import query_words_service
 
 QUERY_WORDS_DESCRIPTION = """查询未删除的日语单词，不修改数据。
-使用次数和陌生次数按指定用户隔离，无统计记录按零参与筛选、排序和返回。
+使用次数、陌生次数和活用不熟悉次数按指定用户隔离，无统计记录按零参与筛选、排序和返回。
 熟悉度通过独立 fam 字段返回和筛选；无记录按 fam_new，不写入默认记录。
 where.fam.in 支持一个或多个熟悉度标签，数组内为 OR，不支持 fam 排序。
 各字段及同字段多个操作均为 AND；筛选和排序字段不必出现在返回字段中。
@@ -46,6 +46,8 @@ def to_query_response(rows: list[InternalQueryWordResult], fields: tuple[str, ..
                 value = row.fam.tag_code
             elif name == "usage_count":
                 value = row.usage.count_value
+            elif name == "inf_miss_count":
+                value = row.inf_miss.count_value
             elif name == "miss_count":
                 value = row.miss.count_value
             else:

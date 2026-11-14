@@ -16,6 +16,8 @@ class QueryWordResult(ResponseModel):
     usage_count: int | None = Field(default=None, description="指定用户使用次数，无统计按零，仅选择该字段时输出。")
     miss_count: int | None = Field(default=None, description="指定用户陌生次数，无统计按零，仅选择该字段时输出。")
 
+    inf_miss_count: int | None = Field(default=None, description="指定用户活用不熟悉次数，无统计按零，仅选择该字段时输出。")
+
     @model_serializer(mode="wrap")
     def serialize_projection(self, handler):
         """按字段是否被赋值输出，不能用排除 None 的方式丢弃选中字段。"""

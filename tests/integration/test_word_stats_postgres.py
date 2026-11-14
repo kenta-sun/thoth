@@ -81,7 +81,7 @@ def database(monkeypatch):
 
 
 CASES = [(count_words_service, "count_words", "usage"),
-         (count_words_service, "count_words", "miss")]
+         (count_words_service, "count_words", "miss"), (count_words_service, "count_words", "inf_miss")]
 
 
 def count_miss():

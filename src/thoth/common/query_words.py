@@ -4,7 +4,7 @@ from types import MappingProxyType
 
 # 查询接口的固定业务字段；审计字段不在开放范围内。
 TEXT_FIELDS = ("word", "common_form", "hiragana", "meaning")
-COUNT_FIELDS = ("usage_count", "miss_count")
+COUNT_FIELDS = ("usage_count", "miss_count", "inf_miss_count")
 QUERY_FIELDS = (*TEXT_FIELDS, "tags", "fam", *COUNT_FIELDS)
 QUERY_OPERATORS = MappingProxyType({
     **{name: frozenset({"eq", "in"}) for name in TEXT_FIELDS},

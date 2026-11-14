@@ -15,6 +15,7 @@ class CountTypeDefinition:
 COUNT_TYPE_DEFINITIONS = (
     CountTypeDefinition("usage", "见到单词的次数", "使用次数"),
     CountTypeDefinition("miss", "没记起单词的次数", "陌生次数"),
+    CountTypeDefinition("inf_miss", "不认识活用形式、不会变形或变形答错的次数，归到对应词典形", "活用不熟悉次数"),
 )
 COUNT_TYPE_CODES = tuple(item.code for item in COUNT_TYPE_DEFINITIONS)
 COUNT_TYPE_OPTIONS_DESCRIPTION = "计数类型：" + "；".join(

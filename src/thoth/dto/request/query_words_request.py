@@ -21,8 +21,8 @@ def _database_text(value: str) -> str:
 
 QueryText = Annotated[str, AfterValidator(_database_text)]
 CountValue = Annotated[int, Field(ge=0, le=9223372036854775807, strict=True)]
-QueryField = Literal["word", "common_form", "hiragana", "meaning", "tags", "fam", "usage_count", "miss_count"]
-SortField = Literal["word", "common_form", "hiragana", "meaning", "usage_count", "miss_count"]
+QueryField = Literal["word", "common_form", "hiragana", "meaning", "tags", "fam", "usage_count", "miss_count", "inf_miss_count"]
+SortField = Literal["word", "common_form", "hiragana", "meaning", "usage_count", "miss_count", "inf_miss_count"]
 
 
 def _query_schema(schema: dict[str, Any]) -> None:
@@ -112,6 +112,7 @@ class WordWhereInput(QueryModel):
     fam: FamiliarityCondition | SkipJsonSchema[None] = Field(default=None, description="按指定用户的熟悉度筛选，独立于普通 tags；未评定按 fam_new。")
     usage_count: CountCondition | SkipJsonSchema[None] = Field(default=None, description="指定用户的使用次数，无统计按零。")
     miss_count: CountCondition | SkipJsonSchema[None] = Field(default=None, description="指定用户的陌生次数，无统计按零。")
+    inf_miss_count: CountCondition | SkipJsonSchema[None] = Field(default=None, description="指定用户的活用不熟悉次数，无统计按零。")
 
 
 class WordSortInput(QueryModel):

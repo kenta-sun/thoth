@@ -67,6 +67,7 @@ def count_words(words: list[str], username: str, count_type: str) -> list[StatsR
                             index, word.word, "updated",
                             usage_count=record.count_value if count_type == "usage" else None,
                             miss_count=record.count_value if count_type == "miss" else None,
+                            inf_miss_count=record.count_value if count_type == "inf_miss" else None,
                         )
                         if record is not None else
                         StatsResult(index, word.word, "skipped", "记录在处理期间发生变化，未更新计数。")

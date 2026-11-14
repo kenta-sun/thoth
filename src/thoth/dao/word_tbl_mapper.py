@@ -13,7 +13,7 @@ from thoth.utils.sql_query_builder import build_query
 
 
 # 主表固定排除删除记录；统计按需 LEFT JOIN，缺失行在所有表达式中统一按零处理。
-# 两个统计别名各自限定完整联合主键，避免多类型关联扩大单词结果。
+# 各统计别名分别限定完整联合主键，避免多类型关联扩大单词结果。
 # 熟悉度按用户和单词唯一关联；返回及筛选共用 COALESCE，未评定按 fam_new 且不写入记录。
 # 标签通过相关子查询投影、EXISTS 筛选，均不扩大主表行数，LIMIT 仍按单词计数。
 WORD_QUERY_SPEC = QuerySqlSpec(
@@ -28,9 +28,11 @@ WORD_QUERY_SPEC = QuerySqlSpec(
         "fam": SqlField("COALESCE(f.tag_code, 'fam_new')", QUERY_OPERATORS["fam"],
                         sortable=False, joins=("fam",)),
         "usage_count": SqlField("COALESCE(u.count_value, 0)", QUERY_OPERATORS["usage_count"], joins=("usage",)),
+        "inf_miss_count": SqlField("COALESCE(i.count_value, 0)", QUERY_OPERATORS["inf_miss_count"], joins=("inf_miss",)),
         "miss_count": SqlField("COALESCE(m.count_value, 0)", QUERY_OPERATORS["miss_count"], joins=("miss",)),
     }),
     joins=MappingProxyType({
+        "inf_miss": "LEFT JOIN word_count_tbl AS i ON i.word_id = w.id AND i.user_id = %(user_id)s AND i.count_type = 'inf_miss'",
         "fam": "LEFT JOIN word_fam_tbl AS f ON f.word_id = w.id AND f.user_id = %(user_id)s",
         "usage": "LEFT JOIN word_count_tbl AS u ON u.word_id = w.id AND u.user_id = %(user_id)s AND u.count_type = 'usage'",
         "miss": "LEFT JOIN word_count_tbl AS m ON m.word_id = w.id AND m.user_id = %(user_id)s AND m.count_type = 'miss'",
@@ -53,6 +55,9 @@ def _query_row_factory(cursor):
             elif name == "usage_count":
                 result.usage.count_type = "usage"
                 result.usage.count_value = value
+            elif name == "inf_miss_count":
+                result.inf_miss.count_type = "inf_miss"
+                result.inf_miss.count_value = value
             elif name == "miss_count":
                 result.miss.count_type = "miss"
                 result.miss.count_value = value
@@ -73,7 +78,7 @@ class WordTblMapper:
     def query_words(self, request: QueryRequest, *, user_id: int) -> list[QueryWordResult]:
         """执行构建器生成的只读查询；不加行锁、不提交事务，空结果返回空列表。
 
-        user_id 由 Service 查找已存在的用户取得，限定两张统计表的关联范围。
+        user_id 由 Service 查找已存在的用户取得，限定统计及熟悉度的关联范围。
         request 已由 Service 校验；构建器再次约束字段及操作，参数交给驱动绑定。
         """
         query = build_query(request, WORD_QUERY_SPEC)

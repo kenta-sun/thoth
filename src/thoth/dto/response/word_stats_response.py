@@ -10,6 +10,7 @@ class WordCounts(OmitNoneResponse):
 
     usage_count: int | None = Field(default=None, description="操作后的使用次数；未取得时省略。")
     miss_count: int | None = Field(default=None, description="操作后的陌生次数；未取得时省略。")
+    inf_miss_count: int | None = Field(default=None, description="操作后的活用不熟悉次数；未取得时省略。")
 
 
 class WordStatsResult(OmitNoneResponse):

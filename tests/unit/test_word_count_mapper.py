@@ -9,7 +9,7 @@ from thoth.utils.generate_rebuild_sql import UPGRADE_OUTPUT, render_upgrade_sql
 
 
 @pytest.mark.parametrize("user_id", [1, 2])
-@pytest.mark.parametrize("kind", ["miss", "usage"])
+@pytest.mark.parametrize("kind", ["miss", "usage", "inf_miss"])
 def test_all_operations_bind_user_word_and_type(user_id, kind):
     """初始化、递增、锁定及清零均限定完整键，返回记录携带正确类型。"""
     connection = ScriptedConnection(None, [(user_id, 7, kind, 3)], (user_id, 7, kind, 3), (user_id, 7, kind, 0))

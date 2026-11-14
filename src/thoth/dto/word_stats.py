@@ -22,6 +22,7 @@ class StatsResult:
     reason: str | None = None  # 跳过或失败原因；成功时省略。
     miss_count: int | None = None  # 本次操作后的值；未操作或不存在时省略。
     usage_count: int | None = None  # 本次操作后的值；未操作时省略。
+    inf_miss_count: int | None = None  # 操作后的活用不熟悉次数；未操作时省略。
 
 
 @dataclass(frozen=True, slots=True)

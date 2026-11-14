@@ -62,4 +62,5 @@ class QueryWordResult:
     usage: WordCountEntity = field(default_factory=WordCountEntity)  # 使用次数，查询缺失行视为零。
     miss: WordCountEntity = field(default_factory=WordCountEntity)  # 陌生次数，查询缺失行视为零。
     fam: WordFamEntity = field(default_factory=WordFamEntity)  # 当前用户熟悉度投影，缺失记录查询时映射为 fam_new。
+    inf_miss: WordCountEntity = field(default_factory=WordCountEntity)  # 活用不熟悉次数，缺失行查询时按零。
     tags: list[WordTagEntity] = field(default_factory=list)  # 按编码排序的标签关联投影。

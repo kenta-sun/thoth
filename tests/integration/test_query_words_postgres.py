@@ -58,7 +58,7 @@ def test_defaults_and_projection_do_not_write_statistics(query_database):
     rows = sorted(query({}), key=lambda row: row["word"])
     assert [row["word"] for row in rows] == ["a", "b", "c", "d", "literal"]
     assert rows[0] == {"word": "a", "common_form": "食べる", "hiragana": "a", "meaning": "a",
-                       "tags": ["v", "v2"], "fam": "fam_new", "usage_count": 0, "miss_count": 4}
+                       "tags": ["v", "v2"], "fam": "fam_new", "usage_count": 0, "miss_count": 4, "inf_miss_count": 0}
     assert rows[1]["miss_count"] == 0 and rows[-1]["tags"] == []
     assert query({"fields": ["common_form"], "sort": [{"field": "word", "direction": "asc"}], "limit": 1}) == [{"common_form": "食べる"}]
     assert query({"where": {"word": {"eq": "deleted"}}}) == []
@@ -159,3 +159,23 @@ def test_fam_invalid_tag_returns_tool_error(query_database, code, message):
     from fastmcp.exceptions import ToolError
     with pytest.raises(ToolError, match=message):
         query({'where': {'fam': {'in': [code]}}})
+
+
+def test_inf_miss_count_increment_query_and_isolation(query_database):
+    """活用计数独立累计；投影、筛选和排序按用户隔离，清零陌生次数不影响它。"""
+    from thoth.tools.count_words_tools import count_words
+    from thoth.service.reset_word_miss_service import reset_word_miss
+    for _ in range(2):
+        rows = count_words(username='tester', words=['a', 'a', 'deleted'], count_type='inf_miss').model_dump(mode='json')['results']
+        assert rows[1]['status'] == rows[2]['status'] == 'skipped'
+    assert rows[0]['counts'] == {'inf_miss_count': 2}
+    count_words(username='other', words=['c'], count_type='inf_miss')
+    assert query({'fields': ['word', 'inf_miss_count'], 'where': {'inf_miss_count': {'gte': 1}},
+                  'sort': [{'field': 'inf_miss_count', 'direction': 'desc'}]}) == [{'word': 'a', 'inf_miss_count': 2}]
+    assert query({'fields': ['word', 'inf_miss_count'], 'where': {'word': {'eq': 'b'}, 'inf_miss_count': {'in': [0]}}}) == [{'word': 'b', 'inf_miss_count': 0}]
+    other = query_words(username='other', query=WordQueryInput.model_validate(
+        {'fields': ['word', 'inf_miss_count'], 'where': {'inf_miss_count': {'gt': 0}}})).model_dump(mode='json')['results']
+    assert other == [{'word': 'c', 'inf_miss_count': 1}]
+    assert query({'fields': ['miss_count', 'usage_count'], 'where': {'word': {'eq': 'a'}}}) == [{'miss_count': 4, 'usage_count': 0}]
+    reset_word_miss(['a'], 'tester')
+    assert query({'fields': ['inf_miss_count', 'miss_count'], 'where': {'word': {'eq': 'a'}}}) == [{'inf_miss_count': 2, 'miss_count': 0}]

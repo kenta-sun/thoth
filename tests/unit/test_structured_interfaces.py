@@ -86,7 +86,7 @@ def test_query_counts_are_strict_bigints(value):
         WordQueryInput.model_validate({"where": {"miss_count": {"eq": value}}})
 
 
-@pytest.mark.parametrize("kind", ["usage", "miss"])
+@pytest.mark.parametrize("kind", ["usage", "miss", "inf_miss"])
 def test_every_tool_output_matches_schema_and_projection_keeps_null(monkeypatch, kind):
     monkeypatch.setattr(add_update_words_service, "add_update_words", Mock(return_value=WordBatchResult([
         WordItemResult(0, None, "failed", "无效文本"), WordItemResult(1, "a", "created")

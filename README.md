@@ -171,12 +171,23 @@ ON CONFLICT (username) DO NOTHING;
 
 ## 单词统计
 
-`count_words` 为所选类型的计数加一：`usage` 为使用次数，`miss` 为陌生次数。
-`count_type` 必填且无默认值，一次仅更新一种类型，不联动另一种计数。直接接受单词字符串数组：
+`count_words` 为所选类型的计数加一：`usage` 为使用次数，`miss` 为陌生次数，`inf_miss` 为活用不熟悉次数。
+`count_type` 必填且无默认值，一次仅更新一种类型，不联动其他计数。直接接受单词字符串数组：
 
 ```json
 {"username":"ethan","words":["食べる","飲む"],"count_type":"usage"}
 ```
+
+活用不熟悉时，将对应词典形传入同一工具：
+
+```json
+{"username":"ethan","words":["食べる"],"count_type":"inf_miss"}
+```
+
+成功结果的 `counts` 只包含 `inf_miss_count`。查询可通过同名字段返回、数值筛选和排序；没有记录时按零。
+该类型统计不认识活用形式、不会变形或变形答错的次数，不自动转换输入词形，也不联动熟悉度标签或其他计数。
+`reset_word_miss` 仍只清零 `miss`，不清零 `inf_miss`。
+已有数据库部署前需执行 [补充活用计数类型](sql/manual/add_inf_miss_count_type.sql)，只增加字典记录，不改表或旧计数。
 
 空数组正常返回空 `results`。数组中的 null、数字、对象等非字符串值拒绝整批。
 字符串中的空值、纯空白及非法数据库文本逐项跳过；同批重复词仅首次出现项计数，后续项说明首次下标。
@@ -189,7 +200,7 @@ ON CONFLICT (username) DO NOTHING;
 主表并发变化可能导致跳过或整条语句失败，不承诺跨语句快照。
 
 返回 `results`，按原输入顺序包含零基 `index`、`word`、`status`。
-updated 项的 `counts` 只包含所选类型的字段（`usage_count` 或 `miss_count`）及更新后计数，skipped 和 failed 附 `reason`。
+updated 项的 `counts` 只包含所选类型的字段（`usage_count`、`miss_count` 或 `inf_miss_count`）及更新后计数，skipped 和 failed 附 `reason`。
 无法安全输出的 word 为 null；只有最终 RETURNING 中的记录报告成功，处理期间未更新到
 的记录返回 skipped。每次成功调用均独立加一，没有请求幂等或自动重试保证。
 配置、连接、初始查询失败，以及参数结构或类型错误返回工具错误。
@@ -220,7 +231,7 @@ updated 项的 `counts` 只包含所选类型的字段（`usage_count` 或 `miss
 | 参数 | 用途 | 省略时 |
 | --- | --- | --- |
 | `where` | 条件对象，各字段和同字段的多个操作均按 AND 组合 | 无额外条件 |
-| `fields` | 返回字段数组 | 全部八个业务字段 |
+| `fields` | 返回字段数组 | 全部九个业务字段 |
 | `sort` | 按优先级排列的 `[{"field":字段,"direction":"asc"或"desc"}]` | 不生成结果排序子句 |
 | `limit` | BIGINT 范围内的正整数 | 返回全部匹配结果，不静默截断 |
 
@@ -230,7 +241,7 @@ updated 项的 `counts` 只包含所选类型的字段（`usage_count` 或 `miss
 | `common_form` | `eq`、`in`、`like` |
 | `tags` | `in`，拥有任意指定编码，不推断标签层级 |
 | `fam` | `in`，匹配指定用户的任一熟悉度标签；未评定按 `fam_new` |
-| `usage_count`、`miss_count` | `eq`、`in`、`gt/gte/lt/lte`；值为 BIGINT 范围内非负整数 |
+| `usage_count`、`miss_count`、`inf_miss_count` | `eq`、`in`、`gt/gte/lt/lte`；值为 BIGINT 范围内非负整数 |
 
 除 `tags`、`fam` 外均可排序，不自动追加单词 ID 排序。筛选和排序使用的字段不必返回。
 `sort` 另支持 `{"field":"random"}`，可省略 direction；显式 asc 或 desc 均为随机顺序。

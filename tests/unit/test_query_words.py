@@ -318,3 +318,16 @@ def test_service_validates_fam_before_word_query(monkeypatch, codes, existing, e
         assert service.query_words(request, 'tester') == []
         words.query_words.assert_called_once_with(request, user_id=1)
     tags.find_by_codes.assert_called_once_with(list(dict.fromkeys(codes)))
+
+
+def test_inf_miss_query_field_uses_scoped_count_join():
+    """新统计字段复用数值条件，返回及排序共享同一条受限关联。"""
+    query = build({'fields': ['inf_miss_count'], 'where': {'inf_miss_count': {'gte': 2, 'lt': 5}},
+                   'sort': [{'field': 'inf_miss_count', 'direction': 'desc'}]})
+    assert query.sql.count('LEFT JOIN word_count_tbl AS i') == 1
+    assert "i.user_id = %(user_id)s AND i.count_type = 'inf_miss'" in query.sql
+    assert 'COALESCE(i.count_value, 0) >= %(p0)s' in query.sql
+    assert 'COALESCE(i.count_value, 0) < %(p1)s' in query.sql
+    assert 'ORDER BY COALESCE(i.count_value, 0) DESC' in query.sql
+    assert query.params == {'p0': 2, 'p1': 5}
+    assert 'word_count_tbl AS i' not in build({'fields': ['word']}).sql

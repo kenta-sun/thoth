@@ -29,7 +29,7 @@ from thoth.dto.word_stats import WordListItem, WordListPreprocessResult, StatsRe
 from thoth.mcp_server import mcp
 from tests.unit.test_word_repository import ScriptedConnection, database_row
 
-CASES = [(count_words_service, "count_words", "usage"), (count_words_service, "count_words", "miss")]
+CASES = [(count_words_service, "count_words", "usage"), (count_words_service, "count_words", "miss"), (count_words_service, "count_words", "inf_miss")]
 
 
 def stat_row(value=1, word_id=7, *, count_type="miss"):
@@ -328,7 +328,7 @@ def test_count_type_schema_and_protocol_validation(monkeypatch):
             assert set(schema["required"]) == {"username", "words", "count_type"}
             field = schema["properties"]["count_type"]
             assert field["type"] == "string"
-            assert set(field["enum"]) == {"usage", "miss"}
+            assert set(field["enum"]) == {"usage", "miss", "inf_miss"}
             assert "default" not in field
             for item in COUNT_TYPE_DEFINITIONS:
                 assert item.code in field["description"]
@@ -343,7 +343,7 @@ def test_count_type_schema_and_protocol_validation(monkeypatch):
     called.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", ["usage", "miss"])
+@pytest.mark.parametrize("kind", ["usage", "miss", "inf_miss"])
 @pytest.mark.parametrize("error", [ValueError("配置错误"), DatabaseError("数据库连接失败")])
 def test_count_protocol_converts_business_errors(monkeypatch, kind, error):
     """两类计数均将整批业务异常转换为 MCP 工具错误。"""
