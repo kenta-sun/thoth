@@ -13,4 +13,8 @@ VALUES
     (E'n', E'名词', E'名詞'),
     (E'adv', E'副词', E'副詞'),
     (E'num', E'数量词', E'数量詞')
+    ('fam_new', '不熟悉', '未習得'),
+    ('fam_rep', '反复不熟悉', '繰り返し間違える'),
+    ('fam_inf', '变形不熟悉', '活用が苦手'),
+    ('fam_ok',  '熟悉', '習得済み')
 ON CONFLICT (code) DO NOTHING;
