@@ -1,5 +1,6 @@
--- 警告：清空七张项目表的全部数据，包括用户、单词、标签关联和统计！
+-- 警告：清空八张项目表的全部数据，包括用户、单词、标签关联、熟悉度和统计！
 -- 重复执行也会再次清空数据；不迁移旧数据，不创建实际用户。
+-- 同时删除旧版 word_miss_tbl、word_usage_tbl（如存在）。
 -- 请先停止 MCP 并确认当前连接的目标库；完成后手动添加用户，再启动新版 MCP。
 -- 由 python -m thoth.utils.generate_rebuild_sql 生成，源文件为分表 DDL 和字典 DML。
 BEGIN;
@@ -7,6 +8,12 @@ BEGIN;
 DROP TABLE IF EXISTS word_miss_tbl;
 
 DROP TABLE IF EXISTS word_usage_tbl;
+
+DROP TABLE IF EXISTS word_count_tbl;
+
+DROP TABLE IF EXISTS count_type_tbl;
+
+DROP TABLE IF EXISTS word_fam_tbl;
 
 DROP TABLE IF EXISTS word_tag_tbl;
 
@@ -160,73 +167,112 @@ COMMENT ON COLUMN word_tag_tbl.updated_at IS '最后更新时间';
 COMMENT ON COLUMN word_tag_tbl.created_by IS '创建者';
 COMMENT ON COLUMN word_tag_tbl.updated_by IS '最后修改者';
 
+CREATE TABLE word_fam_tbl
+(
+    user_id    BIGINT      NOT NULL,
+    word_id    BIGINT      NOT NULL,
+    tag_code   VARCHAR(32) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(128) DEFAULT CURRENT_USER,
+    updated_by VARCHAR(128) DEFAULT CURRENT_USER,
+
+    CONSTRAINT pk_word_fam_tbl
+        PRIMARY KEY (user_id, word_id),
+
+    CONSTRAINT fk_word_fam_tbl_user_tbl
+        FOREIGN KEY (user_id)
+        REFERENCES user_tbl (id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_word_fam_tbl_word_tbl
+        FOREIGN KEY (word_id)
+        REFERENCES word_tbl (id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_word_fam_tbl_tag_tbl
+        FOREIGN KEY (tag_code)
+        REFERENCES tag_tbl (code)
+        ON DELETE RESTRICT
+);
+
+COMMENT ON TABLE word_fam_tbl
+    IS '用户单词熟悉度表';
+
+COMMENT ON COLUMN word_fam_tbl.user_id
+    IS '用户ID';
+COMMENT ON COLUMN word_fam_tbl.word_id
+    IS '单词ID';
+COMMENT ON COLUMN word_fam_tbl.tag_code
+    IS '当前熟悉度标签编码';
+COMMENT ON COLUMN word_fam_tbl.created_at
+    IS '创建时间';
+COMMENT ON COLUMN word_fam_tbl.updated_at
+    IS '最后更新时间';
+COMMENT ON COLUMN word_fam_tbl.created_by
+    IS '创建者';
+COMMENT ON COLUMN word_fam_tbl.updated_by
+    IS '最后修改者';
 -- ============================================================
--- 单词使用次数表
--- 前置表：word_tbl、user_tbl
+-- 计数类型表
 -- ============================================================
 
-CREATE TABLE word_usage_tbl
+CREATE TABLE count_type_tbl
 (
-    user_id        BIGINT NOT NULL,
-    word_id        BIGINT NOT NULL,
-    usage_count    BIGINT      NOT NULL DEFAULT 0,
+    code           TEXT PRIMARY KEY,
+    description    TEXT        NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by     VARCHAR(128) DEFAULT CURRENT_USER,
+    updated_by     VARCHAR(128) DEFAULT CURRENT_USER
+);
+
+COMMENT ON TABLE count_type_tbl IS '计数类型表';
+
+COMMENT ON COLUMN count_type_tbl.code IS '计数类型编码，例如miss、usage，作为主键';
+COMMENT ON COLUMN count_type_tbl.description IS '计数类型的中文说明';
+COMMENT ON COLUMN count_type_tbl.created_at IS '创建时间';
+COMMENT ON COLUMN count_type_tbl.updated_at IS '最后更新时间';
+COMMENT ON COLUMN count_type_tbl.created_by IS '创建者';
+COMMENT ON COLUMN count_type_tbl.updated_by IS '最后修改者';
+
+-- ============================================================
+-- 单词分类计数表
+-- 前置表：word_tbl、user_tbl、count_type_tbl
+-- ============================================================
+
+CREATE TABLE word_count_tbl
+(
+    user_id        BIGINT      NOT NULL,
+    word_id        BIGINT      NOT NULL,
+    count_type     TEXT        NOT NULL,
+    count_value    BIGINT      NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_by     VARCHAR(128) DEFAULT CURRENT_USER,
     updated_by     VARCHAR(128) DEFAULT CURRENT_USER,
-    CONSTRAINT pk_word_usage_tbl PRIMARY KEY (user_id, word_id),
-    CONSTRAINT fk_word_usage_tbl_user_tbl FOREIGN KEY (user_id)
+    CONSTRAINT pk_word_count_tbl PRIMARY KEY (user_id, word_id, count_type),
+    CONSTRAINT fk_word_count_tbl_user_tbl FOREIGN KEY (user_id)
         REFERENCES user_tbl (id) ON DELETE RESTRICT,
-    CONSTRAINT ck_word_usage_tbl_usage_count CHECK (usage_count >= 0),
-    CONSTRAINT fk_word_usage_tbl_word_tbl
+    CONSTRAINT fk_word_count_tbl_count_type_tbl FOREIGN KEY (count_type)
+        REFERENCES count_type_tbl (code) ON DELETE RESTRICT,
+    CONSTRAINT ck_word_count_tbl_count_value CHECK (count_value >= 0),
+    CONSTRAINT fk_word_count_tbl_word_tbl
         FOREIGN KEY (word_id)
             REFERENCES word_tbl (id)
             ON DELETE CASCADE
 );
 
-COMMENT ON TABLE word_usage_tbl IS '单词使用次数表';
+COMMENT ON TABLE word_count_tbl IS '单词分类计数表';
 
-COMMENT ON COLUMN word_usage_tbl.user_id IS '用户ID，与单词ID构成联合主键';
-COMMENT ON COLUMN word_usage_tbl.word_id IS '单词ID，与用户ID构成联合主键';
-COMMENT ON COLUMN word_usage_tbl.usage_count IS '出题或写文章时使用单词的累计次数';
-COMMENT ON COLUMN word_usage_tbl.created_at IS '创建时间';
-COMMENT ON COLUMN word_usage_tbl.updated_at IS '最后更新时间';
-COMMENT ON COLUMN word_usage_tbl.created_by IS '创建者';
-COMMENT ON COLUMN word_usage_tbl.updated_by IS '最后修改者';
-
--- ============================================================
--- 陌生单词记录表
--- 前置表：word_tbl、user_tbl
--- ============================================================
-
-CREATE TABLE word_miss_tbl
-(
-    user_id        BIGINT NOT NULL,
-    word_id        BIGINT NOT NULL,
-    miss_count     BIGINT      NOT NULL DEFAULT 0,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_by     VARCHAR(128) DEFAULT CURRENT_USER,
-    updated_by     VARCHAR(128) DEFAULT CURRENT_USER,
-    CONSTRAINT pk_word_miss_tbl PRIMARY KEY (user_id, word_id),
-    CONSTRAINT fk_word_miss_tbl_user_tbl FOREIGN KEY (user_id)
-        REFERENCES user_tbl (id) ON DELETE RESTRICT,
-    CONSTRAINT ck_word_miss_tbl_miss_count CHECK (miss_count >= 0),
-    CONSTRAINT fk_word_miss_tbl_word_tbl
-        FOREIGN KEY (word_id)
-            REFERENCES word_tbl (id)
-            ON DELETE CASCADE
-);
-
-COMMENT ON TABLE word_miss_tbl IS '陌生单词记录表';
-
-COMMENT ON COLUMN word_miss_tbl.user_id IS '用户ID，与单词ID构成联合主键';
-COMMENT ON COLUMN word_miss_tbl.word_id IS '单词ID，与用户ID构成联合主键';
-COMMENT ON COLUMN word_miss_tbl.miss_count IS '陌生累计次数，包括默写错误和向AI询问单词';
-COMMENT ON COLUMN word_miss_tbl.created_at IS '创建时间';
-COMMENT ON COLUMN word_miss_tbl.updated_at IS '最后更新时间';
-COMMENT ON COLUMN word_miss_tbl.created_by IS '创建者';
-COMMENT ON COLUMN word_miss_tbl.updated_by IS '最后修改者';
+COMMENT ON COLUMN word_count_tbl.user_id IS '用户ID，与单词ID、计数类型构成联合主键';
+COMMENT ON COLUMN word_count_tbl.word_id IS '单词ID，与用户ID、计数类型构成联合主键';
+COMMENT ON COLUMN word_count_tbl.count_type IS '计数类型，关联count_type_tbl.code，与用户ID、单词ID构成联合主键';
+COMMENT ON COLUMN word_count_tbl.count_value IS '该用户对该单词在指定类型下的累计次数，非负，默认0';
+COMMENT ON COLUMN word_count_tbl.created_at IS '创建时间';
+COMMENT ON COLUMN word_count_tbl.updated_at IS '最后更新时间';
+COMMENT ON COLUMN word_count_tbl.created_by IS '创建者';
+COMMENT ON COLUMN word_count_tbl.updated_by IS '最后修改者';
 
 -- ============================================================
 -- 单词状态预置数据
@@ -239,7 +285,7 @@ VALUES
     ('D', '被删除')
 ON CONFLICT (code) DO NOTHING;
 
--- 自动生成：来源 thoth.common.tags.TAG_DEFINITIONS，请勿手工修改。
+-- 手动维护词性和内部熟悉度标签；集成测试检查数据库记录与代码定义一致。
 -- 前置表：tag_tbl；仅插入缺失编码，保留已有记录。
 
 INSERT INTO tag_tbl (code, zh_name, jp_name)
@@ -253,7 +299,18 @@ VALUES
     (E'adj_na', E'ナ形容词', E'ナ形容詞'),
     (E'n', E'名词', E'名詞'),
     (E'adv', E'副词', E'副詞'),
-    (E'num', E'数量词', E'数量詞')
+    (E'num', E'数量词', E'数量詞'),
+    ('fam_new', '不熟悉', '未習得'),
+    ('fam_rep', '反复不熟悉', '繰り返し間違える'),
+    ('fam_inf', '变形不熟悉', '活用が苦手'),
+    ('fam_ok',  '熟悉', '習得済み')
+ON CONFLICT (code) DO NOTHING;
+
+-- 计数类型预置数据；前置表：count_type_tbl。重复初始化保留已有记录。
+INSERT INTO count_type_tbl (code, description)
+VALUES
+    ('miss', '没记起单词的次数'),
+    ('usage', '见到单词的次数')
 ON CONFLICT (code) DO NOTHING;
 
 COMMIT;

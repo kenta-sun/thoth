@@ -1,4 +1,4 @@
-"""公共标签目录：唯一人工维护来源，供工具说明和显式初始化 SQL 生成命令使用。"""
+"""公共标签定义：词性标签供工具说明使用，内部熟悉度标签独立维护；数据库一致性由集成测试检查。"""
 
 from dataclasses import dataclass
 
@@ -9,7 +9,7 @@ class TagDefinition:
 
     code: str  # 标签编码，对应 tag_tbl 的主键。
     zh_name: str  # 面向中文使用者的标签名称。
-    jp_name: str  # 日文标签名称，供初始化数据库使用。
+    jp_name: str  # 日文标签名称，对应数据库标签的日文显示名称。
 
 
 TAG_DEFINITIONS = (
@@ -23,6 +23,14 @@ TAG_DEFINITIONS = (
     TagDefinition("n", "名词", "名詞"),
     TagDefinition("adv", "副词", "副詞"),
     TagDefinition("num", "数量词", "数量詞"),
+)
+
+# 内部熟悉度标签不加入写入或查询请求的标签说明。
+FAMILIARITY_TAG_DEFINITIONS = (
+    TagDefinition("fam_new", "不熟悉", "未習得"),
+    TagDefinition("fam_rep", "反复不熟悉", "繰り返し間違える"),
+    TagDefinition("fam_inf", "变形不熟悉", "活用が苦手"),
+    TagDefinition("fam_ok", "熟悉", "習得済み"),
 )
 
 # description 在模块加载时直接引用生成结果，不查询数据库。

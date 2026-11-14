@@ -1,4 +1,4 @@
--- 自动生成：来源 thoth.common.tags.TAG_DEFINITIONS，请勿手工修改。
+-- 手动维护词性和内部熟悉度标签；集成测试检查数据库记录与代码定义一致。
 -- 前置表：tag_tbl；仅插入缺失编码，保留已有记录。
 
 INSERT INTO tag_tbl (code, zh_name, jp_name)

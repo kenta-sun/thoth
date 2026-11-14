@@ -14,10 +14,11 @@ from thoth.entity import (
     UserEntity,
     TagEntity,
     WordEntity,
-    WordMissEntity,
+    WordCountEntity,
     WordStatusEntity,
     WordTagEntity,
-    WordUsageEntity,
+    WordFamEntity,
+    CountTypeEntity,
 )
 
 
@@ -28,8 +29,9 @@ TABLE_ENTITIES = {
     "tag_tbl": TagEntity,
     "word_sts_tbl": WordStatusEntity,
     "word_tag_tbl": WordTagEntity,
-    "word_usage_tbl": WordUsageEntity,
-    "word_miss_tbl": WordMissEntity,
+    "word_fam_tbl": WordFamEntity,
+    "count_type_tbl": CountTypeEntity,
+    "word_count_tbl": WordCountEntity,
 }
 SQL_TYPES = {
     "BIGINT": int,
@@ -83,8 +85,9 @@ def test_entities_can_be_constructed_without_values(entity):
         (TagEntity, {"zh_name": "动词"}),
         (WordStatusEntity, {"description": "正在使用"}),
         (WordTagEntity, {"tag_code": "verb"}),
-        (WordUsageEntity, {"usage_count": 2}),
-        (WordMissEntity, {"miss_count": 1}),
+        (WordFamEntity, {"user_id": 1, "tag_code": "fam_new"}),
+        (CountTypeEntity, {"code": "usage"}),
+        (WordCountEntity, {"count_type": "miss", "count_value": 1}),
     ],
 )
 def test_entities_allow_partial_values_and_later_assignment(entity, values):

@@ -14,8 +14,8 @@ import pytest
 
 from thoth.common.config import load_settings
 from thoth.dao.word_tbl_mapper import WordTblMapper
-from thoth.dao.word_miss_tbl_mapper import WordMissTblMapper
-from thoth.entity import WordMissEntity
+from thoth.dao.word_count_tbl_mapper import WordCountTblMapper
+from thoth.entity import WordCountEntity
 from thoth.tools.word_stats_mapping import to_stats_results
 from thoth.service import count_word_usage_service, count_word_miss_service, reset_word_miss_service
 
@@ -57,9 +57,10 @@ def database(monkeypatch):
         admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         try:
             admin.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
-            for table in ("user_tbl", "word_sts_tbl", "word_tbl", "word_miss_tbl", "word_usage_tbl"):
+            for table in ("user_tbl", "word_sts_tbl", "word_tbl", "count_type_tbl", "word_count_tbl"):
                 admin.execute((root / f"sql/ddl/ddl__create_table__{table}.sql").read_text())
-            admin.execute((root / "sql/dml/dml__word_sts_tbl.sql").read_text())
+            for table in ("word_sts_tbl", "count_type_tbl"):
+                admin.execute((root / f"sql/dml/dml__{table}.sql").read_text())
             admin.execute("INSERT INTO user_tbl (username) VALUES ('tester'), ('other')")
             admin.execute("INSERT INTO word_tbl (word, common_form, hiragana, meaning) VALUES ('a','a','a','a'),('b','b','b','b')")
 
@@ -106,22 +107,19 @@ def test_overlapping_concurrent_batches(database, service, name, kind):
         batches = list(executor.map(increment, range(workers)))
     assert all(row["status"] == "updated" for batch in batches for row in batch)
     with database() as connection:
-        query = sql.SQL("SELECT {} FROM {} ORDER BY word_id").format(
-            sql.Identifier(kind + "_count"), sql.Identifier("word_" + kind + "_tbl"))
-        assert connection.execute(query).fetchall() == [(workers,), (workers,)]
+        query = "SELECT count_value FROM word_count_tbl WHERE user_id=1 AND count_type=%s ORDER BY word_id"
+        assert connection.execute(query, (kind,)).fetchall() == [(workers,), (workers,)]
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
 def test_failed_batch_preserves_zero_initialization(database, service, name, kind):
-    table = sql.Identifier("word_" + kind + "_tbl")
-    field = sql.Identifier(kind + "_count")
     with database() as connection:
-        connection.execute(sql.SQL("INSERT INTO {} (user_id, word_id, {}) SELECT 1, id, 9223372036854775807 FROM word_tbl WHERE word='a'").format(table, field))
+        connection.execute("INSERT INTO word_count_tbl (user_id, word_id, count_type, count_value) SELECT 1, id, %s, 9223372036854775807 FROM word_tbl WHERE word='a'", (kind,))
     rows = call_stats(service, name, ['b', 'a', None, 'missing'], username="tester")["results"]
     assert [row["status"] for row in rows] == ["failed", "failed", "skipped", "skipped"]
     assert all("counts" not in row for row in rows)
     with database() as connection:
-        values = connection.execute(sql.SQL("SELECT word, {} FROM {} JOIN word_tbl ON id=word_id ORDER BY word").format(field, table)).fetchall()
+        values = connection.execute("SELECT word, count_value FROM word_count_tbl JOIN word_tbl ON id=word_id WHERE user_id=1 AND count_type=%s ORDER BY word", (kind,)).fetchall()
         assert values == [("a", 9223372036854775807), ("b", 0)]
 
 
@@ -131,14 +129,14 @@ def test_reset_and_count_follow_row_lock_order(database, first):
     with ThreadPoolExecutor(max_workers=1) as executor, database() as connection:
         with connection.transaction():
             word = WordTblMapper(connection).find_by_word_for_update("a")
-            mapper = WordMissTblMapper(connection)
-            entity = WordMissEntity(user_id=1, word_id=word.id, updated_by="test")
+            mapper = WordCountTblMapper(connection)
+            entity = WordCountEntity(user_id=1, word_id=word.id, count_type="miss", updated_by="test")
             if first == "reset":
-                mapper.find_for_update(word.id, user_id=1)
+                mapper.find_for_update(word.id, user_id=1, count_type="miss")
                 mapper.reset(entity)
                 future = executor.submit(count_miss)
             else:
-                mapper.increment_many([entity], user_id=1)
+                mapper.increment_many([entity], user_id=1, count_type="miss")
                 future = executor.submit(reset)
         result = future.result(timeout=15)
     assert result["counts"] == {"miss_count": 1 if first == "reset" else 0}
@@ -147,39 +145,89 @@ def test_reset_and_count_follow_row_lock_order(database, first):
 def test_reset_noop_preserves_audit_and_usage(database):
     assert reset()["status"] == "skipped"
     with database() as connection:
-        assert connection.execute("SELECT count(*) FROM word_miss_tbl").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchone() == (0,)
     assert count_miss()["counts"] == {"miss_count": 1}
     assert call_stats(count_word_usage_service, "count_word_usage", ['a'], username="tester")["results"][0]["counts"] == {"usage_count": 1}
     assert reset()["counts"] == {"miss_count": 0}
     with database() as connection:
-        before = connection.execute("SELECT * FROM word_miss_tbl").fetchone()
+        before = connection.execute("SELECT * FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchone()
     assert reset()["status"] == "skipped"
     with database() as connection:
-        assert connection.execute("SELECT * FROM word_miss_tbl").fetchone() == before
-        assert connection.execute("SELECT usage_count FROM word_usage_tbl").fetchone() == (1,)
+        assert connection.execute("SELECT * FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchone() == before
+        assert connection.execute("SELECT count_value FROM word_count_tbl WHERE user_id=1 AND count_type='usage'").fetchone() == (1,)
 
 
 @pytest.mark.parametrize("stage", ["before_initialize", "before_update"])
 def test_status_change_during_batch_is_not_reported_success(database, monkeypatch, stage):
     method = "initialize_many" if stage == "before_initialize" else "increment_many"
-    original = getattr(WordMissTblMapper, method)
+    original = getattr(WordCountTblMapper, method)
 
-    def change_status(self, entities, *, user_id):
+    def change_status(self, entities, *, user_id, count_type):
         with database() as connection:
             connection.execute("UPDATE word_tbl SET status_code='D' WHERE word='a'")
-        return original(self, entities, user_id=user_id)
+        return original(self, entities, user_id=user_id, count_type=count_type)
 
-    monkeypatch.setattr(WordMissTblMapper, method, change_status)
+    monkeypatch.setattr(WordCountTblMapper, method, change_status)
     row = count_miss()
     assert row["status"] == "skipped" and "counts" not in row
     with database() as connection:
-        values = connection.execute("SELECT miss_count FROM word_miss_tbl").fetchall()
+        values = connection.execute("SELECT count_value FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchall()
         assert values == ([] if stage == "before_initialize" else [(0,)])
 
 
 def test_initialization_preserves_existing_audit(database):
     assert count_miss()["status"] == "updated"
     with database() as connection:
-        before = connection.execute("SELECT * FROM word_miss_tbl").fetchone()
-        WordMissTblMapper(connection).initialize_many([WordMissEntity(user_id=1, word_id=before[1])], user_id=1)
-        assert connection.execute("SELECT * FROM word_miss_tbl").fetchone() == before
+        before = connection.execute("SELECT * FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchone()
+        WordCountTblMapper(connection).initialize_many([WordCountEntity(user_id=1, word_id=before[1], count_type="miss")], user_id=1, count_type="miss")
+        assert connection.execute("SELECT * FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchone() == before
+
+
+def test_count_key_constraints_and_delete_policies(database):
+    """同一用户单词允许不同类型，重复三元键及非法计数被拒绝，删除策略保持。"""
+    with database() as connection:
+        insert = "INSERT INTO word_count_tbl (user_id, word_id, count_type) VALUES (%s, %s, %s)"
+        for key in ((1, 1, 'miss'), (1, 1, 'usage'), (2, 1, 'miss'), (1, 2, 'miss')):
+            connection.execute(insert, key)
+        assert connection.execute("SELECT count_value FROM word_count_tbl").fetchall() == [(0,)] * 4
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            connection.execute(insert, (1, 1, 'miss'))
+        for key in ((999, 1, 'miss'), (1, 999, 'miss'), (1, 1, 'unknown')):
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                connection.execute(insert, key)
+        for value, error in ((-1, psycopg.errors.CheckViolation), (None, psycopg.errors.NotNullViolation)):
+            with pytest.raises(error):
+                connection.execute("UPDATE word_count_tbl SET count_value=%s WHERE user_id=1 AND word_id=1 AND count_type='miss'", (value,))
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            connection.execute("DELETE FROM user_tbl WHERE id=1")
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            connection.execute("DELETE FROM count_type_tbl WHERE code='miss'")
+        connection.execute("DELETE FROM word_tbl WHERE id=1")
+        assert connection.execute("SELECT user_id, word_id, count_type FROM word_count_tbl").fetchall() == [(1, 2, 'miss')]
+
+
+def test_concurrent_users_and_types_remain_isolated(database):
+    """并发累计同一单词的两类计数及两个用户，清零只影响选中的用户和类型。"""
+    barrier = Barrier(4)
+
+    def increment(task):
+        """各任务独立执行指定次数，使用不同期望值识别串写或丢失更新。"""
+        username, service, name, count = task
+        barrier.wait(timeout=10)
+        for _ in range(count):
+            assert call_stats(service, name, ['a'], username)["results"][0]["status"] == "updated"
+
+    tasks = [
+        ('tester', count_word_miss_service, 'count_word_miss', 2),
+        ('tester', count_word_usage_service, 'count_word_usage', 3),
+        ('other', count_word_miss_service, 'count_word_miss', 4),
+        ('other', count_word_usage_service, 'count_word_usage', 5),
+    ]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(increment, tasks))
+    with database() as connection:
+        query = "SELECT user_id, word_id, count_type, count_value FROM word_count_tbl ORDER BY user_id, word_id, count_type"
+        assert connection.execute(query).fetchall() == [(1, 1, 'miss', 2), (1, 1, 'usage', 3), (2, 1, 'miss', 4), (2, 1, 'usage', 5)]
+    assert reset()["counts"] == {"miss_count": 0}
+    with database() as connection:
+        assert connection.execute(query).fetchall() == [(1, 1, 'miss', 0), (1, 1, 'usage', 3), (2, 1, 'miss', 4), (2, 1, 'usage', 5)]

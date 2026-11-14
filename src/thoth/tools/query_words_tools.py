@@ -41,9 +41,9 @@ def to_query_response(rows: list[InternalQueryWordResult], fields: tuple[str, ..
             if name == "tags":
                 value = [tag.tag_code for tag in row.tags]
             elif name == "usage_count":
-                value = row.usage.usage_count
+                value = row.usage.count_value
             elif name == "miss_count":
-                value = row.miss.miss_count
+                value = row.miss.count_value
             else:
                 value = getattr(row.word, name)
             values[name] = value

@@ -5,10 +5,10 @@ import psycopg
 from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
 from thoth.dao.word_tbl_mapper import WordTblMapper
-from thoth.dao.word_miss_tbl_mapper import WordMissTblMapper
+from thoth.dao.word_count_tbl_mapper import WordCountTblMapper
 from thoth.db.connection import DatabaseError, open_connection
 from thoth.dto.word_stats import WordListItem, StatsResult
-from thoth.entity import WordMissEntity
+from thoth.entity import WordCountEntity
 from thoth.service.word_stats_input_service import prepare_word_list, merge_stats_results, stats_database_error
 
 
@@ -54,18 +54,18 @@ def _reset_item(item: WordListItem, connection: psycopg.Connection,
             else:
                 if entity.id is None:
                     raise DatabaseError("单词记录未返回有效 ID。")
-                mapper = WordMissTblMapper(connection)
+                mapper = WordCountTblMapper(connection)
                 # 先锁行再判断，保证已为零时不修改审计字段，也不与其他更新交错。
-                record = mapper.find_for_update(entity.id, user_id=user_id)
+                record = mapper.find_for_update(entity.id, user_id=user_id, count_type="miss")
                 if record is None:
                     result = StatsResult(index, word, "skipped", "尚无错误计数记录。")
-                elif record.miss_count == 0:
+                elif record.count_value == 0:
                     result = StatsResult(index, word, "skipped", "错误计数已为零。", miss_count=0)
                 else:
-                    updated = mapper.reset(WordMissEntity(user_id=user_id, word_id=entity.id))
-                    if updated is None or updated.miss_count != 0:
+                    updated = mapper.reset(WordCountEntity(user_id=user_id, word_id=entity.id, count_type="miss"))
+                    if updated is None or updated.count_value != 0:
                         raise DatabaseError("清零未返回有效记录。")
-                    result = StatsResult(index, word, "updated", miss_count=updated.miss_count)
+                    result = StatsResult(index, word, "updated", miss_count=updated.count_value)
         return result
     except (DatabaseError, psycopg.Error) as exc:
         error = stats_database_error(exc) if isinstance(exc, psycopg.Error) else exc

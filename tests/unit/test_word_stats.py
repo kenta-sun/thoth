@@ -33,9 +33,9 @@ from tests.unit.test_word_repository import ScriptedConnection, database_row
 CASES = [(usage_service, "count_word_usage", "usage"), (miss_service, "count_word_miss", "miss")]
 
 
-def stat_row(value=1, word_id=7):
+def stat_row(value=1, word_id=7, *, count_type="miss"):
     """提供经过驱动类型适配的统计记录。"""
-    return (1, word_id, value)
+    return (1, word_id, count_type, value)
 
 
 def install_backend(monkeypatch, service, *responses):
@@ -56,7 +56,7 @@ def test_batch_of_100_uses_four_queries_and_no_explicit_transaction(monkeypatch,
     words = [f"word{i}" for i in range(100)]
     conn = install_backend(monkeypatch, service,
         [database_row(word, record_id=i+1) for i, word in enumerate(words)], None,
-        [stat_row(i+1, i+1) for i in reversed(range(100))])
+        [stat_row(i+1, i+1, count_type=kind) for i in reversed(range(100))])
     rows = call_stats(service, name, words, username="tester")["results"]
     assert len(conn.statements) == 4
     assert conn.commits == conn.rollbacks == 0
@@ -66,23 +66,22 @@ def test_batch_of_100_uses_four_queries_and_no_explicit_transaction(monkeypatch,
     assert "user_tbl" in user_lookup
     assert all(params["user_id"] == 1 for _, params in conn.statements[2:])
     assert "FOR UPDATE" not in lookup
-    assert "SELECT %(user_id)s, id, 0," in initialize and "ON CONFLICT (user_id, word_id) DO NOTHING" in initialize
+    assert "SELECT %(user_id)s, id, %(count_type)s, 0," in initialize and "ON CONFLICT (user_id, word_id, count_type) DO NOTHING" in initialize
     assert "status_code <> 'D'" in initialize and "ORDER BY id" in initialize
-    assert f"SET {kind}_count = {kind}_count + 1" in update
+    assert "SET count_value = count_value + 1" in update
     assert "status_code <> 'D'" in update and "RETURNING" in update
     assert "created_by =" not in update
     assert initialize.count("CURRENT_USER") == 2
     assert "updated_by = CURRENT_USER" in update
     assert all("operator" not in params for _, params in conn.statements)
-    other = "miss" if kind == "usage" else "usage"
-    assert all(f"word_{other}_tbl" not in query for query, _ in conn.statements)
+    assert all(params["count_type"] == kind for _, params in conn.statements[2:])
 
 
 @pytest.mark.parametrize("service,name,kind", CASES)
 def test_filtered_items_duplicates_missing_deleted_and_changed(monkeypatch, service, name, kind):
     conn = install_backend(monkeypatch, service,
         [database_row("a"), database_row("deleted", status_code="D"), database_row("changed", record_id=8)],
-        None, [stat_row(1)])
+        None, [stat_row(1, count_type=kind)])
     values = ["a", None, "", "  ", 123, {}, "a", "missing", "deleted", "changed", "\ud800", "a\x00"]
     rows = call_stats(service, name, values, username="tester")["results"]
     assert [row["index"] for row in rows] == list(range(len(values)))
@@ -152,7 +151,7 @@ def test_invalid_batch_does_not_load_config(monkeypatch, service, name, kind, te
 @pytest.mark.parametrize("service,name,kind", CASES)
 def test_exact_word_bound_as_parameter(monkeypatch, service, name, kind):
     word = " a'; -- "
-    conn = install_backend(monkeypatch, service, [database_row(word)], None, [stat_row()])
+    conn = install_backend(monkeypatch, service, [database_row(word)], None, [stat_row(count_type=kind)])
     assert call_stats(service, name, [word], username="tester")["results"][0]["word"] == word
     assert conn.statements[1][1] == {"words": [word]}
     assert all(word not in query for query, _ in conn.statements)
@@ -160,7 +159,7 @@ def test_exact_word_bound_as_parameter(monkeypatch, service, name, kind):
 
 @pytest.mark.parametrize("service,name,kind", CASES)
 def test_protocol_strict_array_and_structured_result(monkeypatch, service, name, kind):
-    install_backend(monkeypatch, service, [database_row("a")], None, [stat_row()])
+    install_backend(monkeypatch, service, [database_row("a")], None, [stat_row(count_type=kind)])
 
     async def run():
         async with Client(mcp) as client:
@@ -185,9 +184,10 @@ def test_reset_missing_zero_and_nonzero(monkeypatch, existing, expected, status)
     assert row["status"] == status
     assert row.get("counts") == (None if expected is None else {"miss_count": expected})
     assert len(conn.statements) == (4 if existing else 3)
-    assert all("INSERT" not in sql and "word_usage_tbl" not in sql for sql, _ in conn.statements)
+    assert all("INSERT" not in sql for sql, _ in conn.statements)
+    assert all(params["count_type"] == "miss" for _, params in conn.statements[2:])
     if existing:
-        assert "miss_count <> 0" in conn.statements[-1][0]
+        assert "count_value <> 0" in conn.statements[-1][0]
         assert "updated_by = CURRENT_USER" in conn.statements[-1][0]
         assert "updated_by" not in conn.statements[-1][1]
     assert conn.commits == 1
@@ -269,7 +269,7 @@ def test_invalid_internal_batch_fails_before_database(monkeypatch, service, name
 
 @pytest.mark.parametrize("service,name,kind", ALL_TOOLS)
 def test_same_preprocessing_and_original_index_across_tools(monkeypatch, service, name, kind):
-    responses = [database_row("a"), stat_row(9), stat_row(0)] if service is reset_service else [[database_row("a")], None, [stat_row(1)]]
+    responses = [database_row("a"), stat_row(9, count_type=kind), stat_row(0, count_type=kind)] if service is reset_service else [[database_row("a")], None, [stat_row(1, count_type=kind)]]
     conn = install_backend(monkeypatch, service, *responses)
     rows = call_stats(service, name, [None, 'a', 'a', {'word': 'b'}], username="tester")["results"]
     assert [row["index"] for row in rows] == [0, 1, 2, 3]

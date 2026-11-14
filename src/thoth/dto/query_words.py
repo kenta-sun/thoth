@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from collections.abc import Mapping
 
-from thoth.entity import WordEntity, WordUsageEntity, WordMissEntity, WordTagEntity
+from thoth.entity import WordEntity, WordCountEntity, WordTagEntity
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +59,6 @@ class QueryWordResult:
     """通过各表实体承载查询结果；未投影的字段保持 None 或空列表。"""
 
     word: WordEntity = field(default_factory=WordEntity)  # 单词主表投影。
-    usage: WordUsageEntity = field(default_factory=WordUsageEntity)  # 使用次数，查询缺失行视为零。
-    miss: WordMissEntity = field(default_factory=WordMissEntity)  # 陌生次数，查询缺失行视为零。
+    usage: WordCountEntity = field(default_factory=WordCountEntity)  # 使用次数，查询缺失行视为零。
+    miss: WordCountEntity = field(default_factory=WordCountEntity)  # 陌生次数，查询缺失行视为零。
     tags: list[WordTagEntity] = field(default_factory=list)  # 按编码排序的标签关联投影。

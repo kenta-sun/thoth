@@ -4,9 +4,10 @@ from thoth.entity.word import WordEntity
 from thoth.entity.tag import TagEntity
 from thoth.entity.word_status import WordStatusEntity
 from thoth.entity.word_tag import WordTagEntity
-from thoth.entity.word_usage import WordUsageEntity
-from thoth.entity.word_miss import WordMissEntity
+from thoth.entity.word_fam import WordFamEntity
+from thoth.entity.count_type import CountTypeEntity
+from thoth.entity.word_count import WordCountEntity
 
 from thoth.entity.user import UserEntity
 
-__all__ = ['WordEntity', 'TagEntity', 'WordStatusEntity', 'WordTagEntity', 'WordUsageEntity', 'WordMissEntity', 'UserEntity']
+__all__ = ['WordEntity', 'TagEntity', 'WordStatusEntity', 'WordTagEntity', 'WordFamEntity', 'CountTypeEntity', 'WordCountEntity', 'UserEntity']

@@ -32,13 +32,13 @@ def query_database(database, monkeypatch):
                OR (w.word IN ('b','d') AND t.code='n') OR (w.word='deleted' AND t.code='v')
         """)
         connection.execute("""
-            INSERT INTO word_usage_tbl (user_id, word_id, usage_count)
-            SELECT 1, id, CASE word WHEN 'b' THEN 3 WHEN 'd' THEN 1 ELSE 0 END
+            INSERT INTO word_count_tbl (user_id, word_id, count_type, count_value)
+            SELECT 1, id, 'usage', CASE word WHEN 'b' THEN 3 WHEN 'd' THEN 1 ELSE 0 END
             FROM word_tbl WHERE word IN ('b','c','d')
         """)
         connection.execute("""
-            INSERT INTO word_miss_tbl (user_id, word_id, miss_count)
-            SELECT 1, id, CASE word WHEN 'a' THEN 4 WHEN 'c' THEN 2 ELSE 9 END
+            INSERT INTO word_count_tbl (user_id, word_id, count_type, count_value)
+            SELECT 1, id, 'miss', CASE word WHEN 'a' THEN 4 WHEN 'c' THEN 2 ELSE 9 END
             FROM word_tbl WHERE word IN ('a','c','d')
         """)
     monkeypatch.setattr(service, "open_connection", database)
@@ -53,8 +53,8 @@ def query(raw):
 
 def test_defaults_and_projection_do_not_write_statistics(query_database):
     with query_database() as connection:
-        before = [connection.execute(f"SELECT * FROM {table} ORDER BY word_id").fetchall()
-                  for table in ("word_usage_tbl", "word_miss_tbl")]
+        before = [connection.execute("SELECT * FROM word_count_tbl WHERE user_id=1 AND count_type=%s ORDER BY word_id", (kind,)).fetchall()
+                  for kind in ("usage", "miss")]
     rows = sorted(query({}), key=lambda row: row["word"])
     assert [row["word"] for row in rows] == ["a", "b", "c", "d", "literal"]
     assert rows[0] == {"word": "a", "common_form": "食べる", "hiragana": "a", "meaning": "a",
@@ -65,8 +65,8 @@ def test_defaults_and_projection_do_not_write_statistics(query_database):
     assert query({"where": {"word": {"in": ["missing", "a"]}}, "fields": ["word"]}) == [{"word": "a"}]
     assert query({"where": {"word": {"eq": "'; DROP TABLE word_tbl; --"}}}) == []
     with query_database() as connection:
-        after = [connection.execute(f"SELECT * FROM {table} ORDER BY word_id").fetchall()
-                 for table in ("word_usage_tbl", "word_miss_tbl")]
+        after = [connection.execute("SELECT * FROM word_count_tbl WHERE user_id=1 AND count_type=%s ORDER BY word_id", (kind,)).fetchall()
+                 for kind in ("usage", "miss")]
     assert after == before
 
 

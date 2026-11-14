@@ -5,10 +5,10 @@ import psycopg
 from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
 from thoth.dao.word_tbl_mapper import WordTblMapper
-from thoth.dao.word_miss_tbl_mapper import WordMissTblMapper
+from thoth.dao.word_count_tbl_mapper import WordCountTblMapper
 from thoth.db.connection import DatabaseError, open_connection
 from thoth.dto.word_stats import StatsResult
-from thoth.entity import WordMissEntity
+from thoth.entity import WordCountEntity
 from thoth.service.word_stats_input_service import prepare_word_list, merge_stats_results, stats_database_error
 
 
@@ -48,19 +48,19 @@ def count_word_miss(words: list[str], username: str) -> list[StatsResult]:
         results = {item.index: StatsResult(item.index, item.original_value, "skipped", "单词不存在。")
                    for item in items}
         if pending:
-            mapper = WordMissTblMapper(connection)
-            entities = [WordMissEntity(user_id=user.id, word_id=record.id) for record in pending.values()]
+            mapper = WordCountTblMapper(connection)
+            entities = [WordCountEntity(user_id=user.id, word_id=record.id, count_type="miss") for record in pending.values()]
             try:
                 # 两条独立提交的批量写入；只有最终 RETURNING 中的记录算成功。
-                mapper.initialize_many(entities, user_id=user.id)
-                updated = mapper.increment_many(entities, user_id=user.id)
-                if any(record.miss_count is None for record in updated):
+                mapper.initialize_many(entities, user_id=user.id, count_type="miss")
+                updated = mapper.increment_many(entities, user_id=user.id, count_type="miss")
+                if any(record.count_value is None for record in updated):
                     raise DatabaseError("批量计数未返回有效数值。")
                 by_id = {record.word_id: record for record in updated}
                 for index, word in pending.items():
                     record = by_id.get(word.id)
                     results[index] = (
-                        StatsResult(index, word.word, "updated", miss_count=record.miss_count)
+                        StatsResult(index, word.word, "updated", miss_count=record.count_value)
                         if record is not None else
                         StatsResult(index, word.word, "skipped", "记录在处理期间发生变化，未更新计数。")
                     )

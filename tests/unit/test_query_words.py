@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import json
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -23,7 +22,6 @@ from thoth.tools.query_words_tools import to_query_request, to_query_response
 from thoth.dto.query_words import QueryCondition, QueryRequest
 from thoth.service import query_words_service as service
 from thoth.mcp_server import mcp
-from thoth.utils.generate_tag_sql import render_tag_sql
 from thoth.utils.sql_query_builder import build_query
 
 
@@ -39,8 +37,8 @@ def test_default_query_and_single_field_projection():
     assert "w.status_code <> 'D'" in query.sql and "LIMIT" not in query.sql
     assert "\nORDER BY " not in query.sql
     assert "w.id ASC" not in query.sql
-    assert "COALESCE(u.usage_count, 0)" in query.sql
-    assert "COALESCE(m.miss_count, 0)" in query.sql
+    assert "COALESCE(u.count_value, 0)" in query.sql
+    assert "COALESCE(m.count_value, 0)" in query.sql
     assert "EXISTS" not in query.sql
     for field in ("created_at", "updated_at", "created_by", "updated_by"):
         assert field not in query.sql
@@ -61,12 +59,12 @@ def test_combination_binds_values_and_joins_unprojected_sort_and_filter():
     assert pattern not in query.sql
     assert "ft.tag_code = ANY(%(p1)s)" in query.sql
     assert "w.common_form LIKE %(p0)s" in query.sql
-    assert "COALESCE(u.usage_count, 0) >= %(p2)s" in query.sql
-    assert "COALESCE(u.usage_count, 0) <= %(p3)s" in query.sql
-    assert "ORDER BY COALESCE(m.miss_count, 0) DESC, COALESCE(u.usage_count, 0) ASC\nLIMIT %(limit)s" in query.sql
+    assert "COALESCE(u.count_value, 0) >= %(p2)s" in query.sql
+    assert "COALESCE(u.count_value, 0) <= %(p3)s" in query.sql
+    assert "ORDER BY COALESCE(m.count_value, 0) DESC, COALESCE(u.count_value, 0) ASC\nLIMIT %(limit)s" in query.sql
     assert query.sql.endswith("LIMIT %(limit)s")
-    assert query.sql.count("LEFT JOIN word_usage_tbl") == 1
-    assert query.sql.count("LEFT JOIN word_miss_tbl") == 1
+    assert query.sql.count("LEFT JOIN word_count_tbl AS u") == 1
+    assert query.sql.count("LEFT JOIN word_count_tbl AS m") == 1
 
 
 @pytest.mark.parametrize("direction", [None, "asc", "desc"])
@@ -95,9 +93,9 @@ def test_no_sort_with_limit_and_mixed_random_priority():
     assert query.sql.endswith("LIMIT %(limit)s") and query.params == {"limit": 100}
     query = build({"fields": ["word"], "sort": [
         {"field": "miss_count", "direction": "desc"}, {"field": "random"}]})
-    assert query.sql.endswith("ORDER BY COALESCE(m.miss_count, 0) DESC, random()")
-    assert query.sql.count("LEFT JOIN word_miss_tbl") == 1
-    assert "word_usage_tbl" not in query.sql
+    assert query.sql.endswith("ORDER BY COALESCE(m.count_value, 0) DESC, random()")
+    assert query.sql.count("LEFT JOIN word_count_tbl AS m") == 1
+    assert "word_count_tbl AS u" not in query.sql
 
 
 @pytest.mark.parametrize("item", [
@@ -115,9 +113,9 @@ def test_sort_schema_and_runtime_reject_invalid_options(item):
 
 @pytest.mark.parametrize("field,operation,value,fragment", [
     ("word", "in", ["a", "b"], "w.word = ANY(%(p0)s)"),
-    ("usage_count", "in", [0, 1], "COALESCE(u.usage_count, 0) = ANY(%(p0)s)"),
-    ("miss_count", "gt", 1, "COALESCE(m.miss_count, 0) > %(p0)s"),
-    ("miss_count", "lt", 4, "COALESCE(m.miss_count, 0) < %(p0)s"),
+    ("usage_count", "in", [0, 1], "COALESCE(u.count_value, 0) = ANY(%(p0)s)"),
+    ("miss_count", "gt", 1, "COALESCE(m.count_value, 0) > %(p0)s"),
+    ("miss_count", "lt", 4, "COALESCE(m.count_value, 0) < %(p0)s"),
     ("common_form", "like", "食%", "w.common_form LIKE %(p0)s"),
 ])
 def test_operator_sql(field, operation, value, fragment):
@@ -188,7 +186,7 @@ def test_projection_maps_table_entities_and_serializes_only_selected_fields():
     factory = _query_row_factory(SimpleNamespace(description=[SimpleNamespace(name=name) for name in fields]))
     row = factory(("食べる", ["v", "v2"], 0, 2))
     assert row.word.word is None and row.word.created_at is None
-    assert row.usage.word_id is None and row.miss.miss_count == 2
+    assert row.usage.word_id is None and row.miss.count_value == 2
     assert to_query_response([row], fields).model_dump(mode="json") == {"results": [
         {"common_form": "食べる", "tags": ["v", "v2"], "usage_count": 0, "miss_count": 2}]}
     assert to_query_response([], fields).model_dump(mode="json") == {"results": []}
@@ -227,7 +225,7 @@ def test_protocol_schema_response_and_errors(monkeypatch):
     asyncio.run(run())
 
 
-def test_tags_single_source_and_description_import_does_not_connect(monkeypatch):
+def test_tag_descriptions_and_schema_do_not_connect(monkeypatch):
     from thoth.db import connection
     fail = Mock(side_effect=AssertionError("must not connect"))
     monkeypatch.setattr(connection, "open_connection", fail)
@@ -239,6 +237,13 @@ def test_tags_single_source_and_description_import_does_not_connect(monkeypatch)
         for tag in TAG_DEFINITIONS:
             assert f"{tag.code}={tag.zh_name}" in schema
     assert len({tag.code for tag in TAG_DEFINITIONS}) == len(TAG_DEFINITIONS)
-    root = Path(__file__).resolve().parents[2]
-    assert (root / "sql/dml/dml__tag_tbl.sql").read_text() == render_tag_sql()
     fail.assert_not_called()
+
+
+def test_count_joins_are_scoped_by_user_word_and_type():
+    """两类投影同时出现时，各关联限定完整主键，不将类型过滤放到外层 WHERE。"""
+    query = build({"fields": ["word", "miss_count", "usage_count"]})
+    for alias, kind in (("u", "usage"), ("m", "miss")):
+        assert (f"LEFT JOIN word_count_tbl AS {alias} ON {alias}.word_id = w.id "
+                f"AND {alias}.user_id = %(user_id)s AND {alias}.count_type = '{kind}'") in query.sql
+    assert 'count_type' not in query.sql.partition('WHERE')[2]

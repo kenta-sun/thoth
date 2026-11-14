@@ -79,16 +79,35 @@ Dockerfile 设置容器内监听 `0.0.0.0:8000`，Compose 仅发布宿主机 `12
 {"username":"ethan","query":{"sort":[{"field":"miss_count","direction":"desc"}],"limit":10}}
 ```
 
+## 统计表替换
+
+已有库使用 [sql/manual/replace_word_statistics.sql](sql/manual/replace_word_statistics.sql)：
+停止旧版 MCP、核对目标库后，整份执行一次，再启动新版代码。
+脚本只丢弃两张旧统计表及其计数，保留用户、单词、标签和其他业务表；不迁移旧计数。
+新表已经存在时执行失败，不能作为重复初始化脚本使用；客户端遇错应停止并回滚。
+本次交付仅生成 SQL，未执行数据库替换。
+
+`word_count_tbl` 以 `(user_id, word_id, count_type)` 为联合主键，
+`count_value` 为非空 BIGINT，默认 0，限制非负。
+`count_type` 外键引用 `count_type_tbl.code`，字典预置 `miss` 和 `usage`；
+用户删除保持 RESTRICT，单词删除保持 CASCADE，被引用的计数类型禁止删除。
+两个新表沿用四个审计字段。分表 DDL 位于 `sql/ddl`，类型字典 DML 位于 `sql/dml`。
+
+所有计数及清零按用户、单词和类型定位；数据库内原子递增，初始化与递增仍独立提交。
+清零只操作指定用户的 miss，缺失或已经为零时不修改审计字段。
+查询按类型分别关联，缺失计数视为 0，联合主键保证多类型不会扩大结果条数。
+MCP 工具名称、参数及对外 `miss_count`、`usage_count` 字段保持不变。
+
 ## 数据库完整重建与手动添加用户
 
-**[sql/rebuild_all.sql](sql/rebuild_all.sql) 会清空全部七张项目表的数据，重复执行也会再次清空。**
-脚本在一个事务中按依赖顺序删除并重建用户、单词、状态、标签、标签关联和两张统计表，再初始化状态和标签字典。
+**[sql/rebuild_all.sql](sql/rebuild_all.sql) 会清空全部八张项目表的数据，重复执行也会再次清空。**
+脚本在一个事务中按依赖顺序删除并重建用户、单词、状态、标签、标签关联、熟悉度、计数类型字典和统一统计表，再初始化状态、标签和计数类型字典。
 不迁移旧数据，不删除数据库或 schema，不使用 DROP CASCADE；外部依赖导致失败时整体回滚。
 用户表初始为空，单词和统计也为空。
 
 执行顺序：停止 MCP → 在 SQL 客户端确认目标数据库 → 完整执行重建脚本 → 手动添加用户 → 启动新版 MCP。
 生产环境由使用者自行执行；脚本不包含连接信息。请整份执行，不选择部分语句运行，客户端报错应停止并回滚。
-建表顺序为 `user_tbl`、`word_sts_tbl`、`tag_tbl`、`word_tbl`、`word_tag_tbl`、`word_usage_tbl`、`word_miss_tbl`。
+建表顺序为 `user_tbl`、`word_sts_tbl`、`tag_tbl`、`word_tbl`、`word_tag_tbl`、`word_fam_tbl`、`count_type_tbl`、`word_count_tbl`。
 
 手动添加用户可参考 [sql/manual/add_user.sql](sql/manual/add_user.sql)，替换示例用户名后单独执行：
 
@@ -97,7 +116,7 @@ INSERT INTO user_tbl (username) VALUES ('ethan')
 ON CONFLICT (username) DO NOTHING;
 ```
 
-合并脚本由分表 DDL 和字典 DML 生成；修改源 SQL 后同步生成，命令不会连接数据库：
+完整重建和一次性统计表替换脚本均由分表 DDL 和字典 DML 生成；修改源 SQL 后同步生成，命令不会连接数据库：
 
 ```shell
 .venv/bin/python -m thoth.utils.generate_rebuild_sql
@@ -247,21 +266,16 @@ updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipp
 
 ## 标签目录维护
 
-`src/thoth/common/tags.py` 中的 `TAG_DEFINITIONS` 是唯一人工维护的完整标签目录，包含编码及中日文名称。
-写入与查询请求模型的标签字段说明复用 `TAG_OPTIONS_DESCRIPTION`，生成 Schema 不连接数据库。
-修改目录后重启 MCP 服务即可更新工具说明；示例中的少量编码不构成另一份标签清单。
+`src/thoth/common/tags.py` 分别维护两类标签的编码及中日文名称：
+- `TAG_DEFINITIONS`：词性标签，供写入和查询请求的 `TAG_OPTIONS_DESCRIPTION` 使用。
+- `FAMILIARITY_TAG_DEFINITIONS`：内部熟悉度标签，不加入对外参数说明。
 
-标签初始化 SQL 是派生产物，不手工编辑。在项目根目录执行：
-
-```shell
-.venv/bin/python -m thoth.utils.generate_tag_sql
-.venv/bin/python -m thoth.utils.generate_tag_sql --check
-```
-
-第一条命令生成 `sql/dml/dml__tag_tbl.sql`，第二条只检查文件是否与常量一致。
-命令不连接或修改数据库，SQL 执行时仅插入缺失编码，保留已有标签记录。
-数据库标签仍需显式初始化或迁移；修改常量不会自动修改已存名称或删除标签。
-写入时仍校验标签是否存在于数据库，不改为仅按常量校验。
+`sql/dml/dml__tag_tbl.sql` 手动维护两类标签的插入语句，不再由代码生成。
+集成测试合并两份定义，检查测试数据库中标签的编码、中文名和日文名是否一致；
+单元测试只检查工具说明、编码重复等代码行为，不比较 SQL 文件内容。
+修改标签 SQL 后，使用 `python -m thoth.utils.generate_rebuild_sql` 更新汇总脚本。
+数据库由使用者手动执行 SQL 更新；现有插入语句遇到相同编码时保留已有记录。
+写入单词时仍以数据库查询结果判断标签是否存在，不新增熟悉度标签的请求拦截规则。
 
 ## 代码结构
 
@@ -278,7 +292,7 @@ JSON 参数 → FastMCP 校验 → 请求模型 → 工具入口映射 → 内�
 - `dto` 中其他模块承载内部业务指令、查询和结果；Service 不导入接口模型或 FastMCP。
 - `service/<工具全名>_service.py` 管理专属业务流程、连接、业务校验、并发冲突和事务，不负责对外 JSON 序列化。
 - `dao` 按一张表一个 `<完整表名>_mapper.py` 组织，封装 SQL 与实体映射，不决定业务分支或管理事务。
-- `entity` 对应七张表，字段名称及类型与表一致，全部允许 None 且默认 None，不进行业务校验。
+- `entity` 对应八张表，字段名称及类型与表一致，全部允许 None 且默认 None，不进行业务校验。
 - `utils/sql_query_builder.py` 构建查询模板与绑定参数，Mapper 提供可信字段和关联定义。
 - `db/connection.py` 管理数据库连接，`common/config.py` 管理运行配置。
 
@@ -335,3 +349,8 @@ url = "http://127.0.0.1:8000/mcp"
 每次连接先确认实际数据库名为 `thoth_test`，确认后才允许写入。
 每个测试在测试库中创建随机独立 schema，正常完成或断言失败时在 finally 中删除该 schema 及其中的表和数据；不会清空整个库。
 进程被强制终止时可能残留临时 schema，不会自动删除其他测试的 schema。测试账号需要创建 schema 的权限。
+
+统计测试在每个新 schema 中依次创建用户、状态、单词、计数类型及统一统计表，
+插入状态和计数类型字典后准备业务数据；查询测试再补建标签相关表。
+完整重建测试使用生成的 `sql/rebuild_all.sql`，两条初始化路径都包含 `count_type_tbl`。
+重复测试使用不同 schema，不需要重复执行一次性替换脚本，也不需要将建表改为 `IF NOT EXISTS`。

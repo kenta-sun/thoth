@@ -64,13 +64,14 @@ Dockerfile 将文件复制到 `/app/.env.prd`；服务启动时校验配置，�
 SELECT current_database();
 ```
 
-执行下面这一条只读 SQL，确认七张表存在（整个代码块是一条 SQL）：
+执行下面这一条只读 SQL，确认八张表存在（整个代码块是一条 SQL）：
 
 ```sql
 SELECT name, to_regclass(name) AS existing_table
 FROM unnest(ARRAY[
   'user_tbl', 'word_tbl', 'word_sts_tbl', 'tag_tbl',
-  'word_tag_tbl', 'word_usage_tbl', 'word_miss_tbl'
+  'word_tag_tbl', 'word_fam_tbl', 'count_type_tbl',
+  'word_count_tbl'
 ]) AS tables(name);
 ```
 
@@ -93,7 +94,7 @@ INSERT INTO user_tbl (username) VALUES ('ethan')
 ON CONFLICT (username) DO NOTHING;
 ```
 
-镜像不包含数据库，也不创建或迁移表。已有数据时不要执行 `sql/rebuild_all.sql`，它会清空并重建七张表。
+镜像不包含数据库，也不创建或迁移表。已有数据时不要执行 `sql/rebuild_all.sql`，它会清空并重建八张表。
 只有确认是允许清空的全新目标库，才手动用该脚本初始化表和字典；缺表但需要保留数据时，应另行迁移。
 
 ## 4. 构建镜像

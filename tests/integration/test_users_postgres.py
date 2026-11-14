@@ -13,12 +13,14 @@ import pytest
 from tests.integration.test_word_stats_postgres import _load_test_dsn, _connect_test_database
 from thoth.service import (query_users_service, query_words_service, add_update_words_service,
                           count_word_usage_service, count_word_miss_service, reset_word_miss_service)
-from thoth.common.tags import TAG_DEFINITIONS
+from thoth.common.tags import TAG_DEFINITIONS, FAMILIARITY_TAG_DEFINITIONS
 from thoth.dto.request.query_words_request import WordQueryInput
 from thoth.dto.request.add_update_words_request import WordWriteInput
 from thoth.tools import query_words_tools, add_update_words_tools, query_users_tools
 
 ROOT = Path(__file__).resolve().parents[2]
+# 合并两类标签仅用于数据库验收，不影响工具对外说明。
+ALL_TAG_DEFINITIONS = TAG_DEFINITIONS + FAMILIARITY_TAG_DEFINITIONS
 
 
 @pytest.fixture
@@ -68,10 +70,12 @@ def query(username, **raw):
 def test_rebuild_empty_tables_and_seed_dictionaries(rebuilt):
     assert query_users_tools.query_users().model_dump(mode="json") == {"results": []}
     with rebuilt() as connection:
-        for table in ("user_tbl", "word_tbl", "word_tag_tbl", "word_usage_tbl", "word_miss_tbl"):
+        for table in ("user_tbl", "word_tbl", "word_tag_tbl", "word_count_tbl"):
             assert connection.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))).fetchone() == (0,)
         assert connection.execute("SELECT code FROM word_sts_tbl ORDER BY code").fetchall() == [("A",), ("D",)]
-        assert connection.execute("SELECT count(*) FROM tag_tbl").fetchone() == (len(TAG_DEFINITIONS),)
+        assert connection.execute("SELECT code, zh_name, jp_name FROM tag_tbl ORDER BY code").fetchall() == sorted(
+            (tag.code, tag.zh_name, tag.jp_name) for tag in ALL_TAG_DEFINITIONS
+        )
 
 
 def test_two_users_share_words_but_not_counts_or_reset(rebuilt):
@@ -83,7 +87,7 @@ def test_two_users_share_words_but_not_counts_or_reset(rebuilt):
     assert query("乙", fields=["word", "usage_count", "miss_count"]) == [
         {"word": "a", "usage_count": 0, "miss_count": 0}, {"word": "b", "usage_count": 0, "miss_count": 0}]
     with rebuilt() as connection:
-        assert connection.execute("SELECT count(*) FROM word_miss_tbl WHERE user_id=2").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM word_count_tbl WHERE user_id=2 AND count_type='miss'").fetchone() == (0,)
     count_word_miss_service.count_word_miss(['b'], "乙")
     count_word_usage_service.count_word_usage(['b'], "乙")
     for field in ("miss_count", "usage_count"):
@@ -109,14 +113,14 @@ def test_user_and_statistics_constraints(rebuilt):
         with pytest.raises(psycopg.errors.StringDataRightTruncation):
             connection.execute("INSERT INTO user_tbl (username) VALUES (%s)", ("a" * 129,))
         connection.execute("INSERT INTO user_tbl (username) VALUES ('Alice'), ('alice')")
-        for table in ("word_miss_tbl", "word_usage_tbl"):
-            insert = sql.SQL("INSERT INTO {} (user_id,word_id) VALUES (%s,1)").format(sql.Identifier(table))
-            connection.execute(insert, (1,))
-            connection.execute(insert, (2,))
+        for kind in ("miss", "usage"):
+            insert = "INSERT INTO word_count_tbl (user_id,word_id,count_type) VALUES (%s,1,%s)"
+            connection.execute(insert, (1, kind))
+            connection.execute(insert, (2, kind))
             with pytest.raises(psycopg.errors.UniqueViolation):
-                connection.execute(insert, (1,))
+                connection.execute(insert, (1, kind))
             with pytest.raises(psycopg.errors.ForeignKeyViolation):
-                connection.execute(insert, (999,))
+                connection.execute(insert, (999, kind))
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             connection.execute("DELETE FROM user_tbl WHERE id=1")
 
@@ -128,7 +132,9 @@ def test_rebuild_removes_old_data_and_reinitializes(rebuilt):
         connection.execute((ROOT / "sql/rebuild_all.sql").read_text())
         assert connection.execute("SELECT count(*) FROM word_tbl").fetchone() == (0,)
         assert connection.execute("SELECT count(*) FROM user_tbl").fetchone() == (0,)
-        assert connection.execute("SELECT count(*) FROM tag_tbl").fetchone() == (len(TAG_DEFINITIONS),)
+        assert connection.execute("SELECT code, zh_name, jp_name FROM tag_tbl ORDER BY code").fetchall() == sorted(
+            (tag.code, tag.zh_name, tag.jp_name) for tag in ALL_TAG_DEFINITIONS
+        )
 
 
 def test_external_dependency_rolls_back_whole_rebuild(rebuilt):
@@ -140,5 +146,5 @@ def test_external_dependency_rolls_back_whole_rebuild(rebuilt):
             connection.execute((ROOT / "sql/rebuild_all.sql").read_text())
         connection.execute("ROLLBACK")
         # 统计表在词表之前删除，回滚须连同已删除的表和数据一起恢复。
-        assert connection.execute("SELECT miss_count FROM word_miss_tbl").fetchall() == [(1,)]
+        assert connection.execute("SELECT count_value FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchall() == [(1,)]
         assert connection.execute("SELECT count(*) FROM retained_words").fetchone() == (2,)
