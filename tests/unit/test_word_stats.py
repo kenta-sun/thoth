@@ -11,8 +11,7 @@ import pytest
 from fastmcp import Client
 from thoth.db.connection import DatabaseError
 
-from thoth.service import count_word_usage_service as usage_service
-from thoth.service import count_word_miss_service as miss_service
+from thoth.service import count_words_service
 from thoth.service import reset_word_miss_service as reset_service
 from thoth.service.word_stats_input_service import prepare_word_list, merge_stats_results
 from thoth.tools.word_stats_mapping import to_stats_results
@@ -23,14 +22,14 @@ def serialize_stats(rows):
     return {"results": [row.model_dump(mode="json") for row in to_stats_results(rows)]}
 
 
-def call_stats(service, name, words, username="tester"):
+def call_stats(service, name, words, username="tester", *, count_type=None):
     """执行真实业务服务并映射响应，SQL 与事务检查保留在调用测试中。"""
-    return serialize_stats(getattr(service, name)(words, username))
+    return serialize_stats(getattr(service, name)(words, username, **({"count_type": count_type} if name == "count_words" else {})))
 from thoth.dto.word_stats import WordListItem, WordListPreprocessResult, StatsResult
 from thoth.mcp_server import mcp
 from tests.unit.test_word_repository import ScriptedConnection, database_row
 
-CASES = [(usage_service, "count_word_usage", "usage"), (miss_service, "count_word_miss", "miss")]
+CASES = [(count_words_service, "count_words", "usage"), (count_words_service, "count_words", "miss")]
 
 
 def stat_row(value=1, word_id=7, *, count_type="miss"):
@@ -57,7 +56,7 @@ def test_batch_of_100_uses_four_queries_and_no_explicit_transaction(monkeypatch,
     conn = install_backend(monkeypatch, service,
         [database_row(word, record_id=i+1) for i, word in enumerate(words)], None,
         [stat_row(i+1, i+1, count_type=kind) for i in reversed(range(100))])
-    rows = call_stats(service, name, words, username="tester")["results"]
+    rows = call_stats(service, name, words, username="tester", count_type=kind)["results"]
     assert len(conn.statements) == 4
     assert conn.commits == conn.rollbacks == 0
     assert [row["word"] for row in rows] == words
@@ -83,7 +82,7 @@ def test_filtered_items_duplicates_missing_deleted_and_changed(monkeypatch, serv
         [database_row("a"), database_row("deleted", status_code="D"), database_row("changed", record_id=8)],
         None, [stat_row(1, count_type=kind)])
     values = ["a", None, "", "  ", 123, {}, "a", "missing", "deleted", "changed", "\ud800", "a\x00"]
-    rows = call_stats(service, name, values, username="tester")["results"]
+    rows = call_stats(service, name, values, username="tester", count_type=kind)["results"]
     assert [row["index"] for row in rows] == list(range(len(values)))
     assert rows[0]["counts"] == {f"{kind}_count": 1}
     assert all(row["status"] == "skipped" and row["reason"] for row in rows[1:])
@@ -100,7 +99,7 @@ def test_filtered_items_duplicates_missing_deleted_and_changed(monkeypatch, serv
 @pytest.mark.parametrize("values", [[], [None, "", " ", 1, {}, "\ud800", "\x00"]])
 def test_all_filtered_only_checks_user(monkeypatch, service, name, kind, values):
     conn = install_backend(monkeypatch, service)
-    rows = call_stats(service, name, values, username="tester")["results"]
+    rows = call_stats(service, name, values, username="tester", count_type=kind)["results"]
     assert len(rows) == len(values)
     assert all(row["status"] == "skipped" for row in rows)
     assert len(conn.statements) == 1
@@ -110,7 +109,7 @@ def test_all_filtered_only_checks_user(monkeypatch, service, name, kind, values)
 @pytest.mark.parametrize("service,name,kind", CASES)
 def test_missing_only_does_not_write(monkeypatch, service, name, kind):
     conn = install_backend(monkeypatch, service, [])
-    assert call_stats(service, name, ['missing'], username="tester")["results"][0]["status"] == "skipped"
+    assert call_stats(service, name, ['missing'], username="tester", count_type=kind)["results"][0]["status"] == "skipped"
     assert len(conn.statements) == 2
 
 
@@ -122,7 +121,7 @@ def test_batch_write_failure_fails_pending_only_without_retry(monkeypatch, servi
         responses.append(None)
     responses.append(psycopg.errors.NumericValueOutOfRange("private SQL"))
     conn = install_backend(monkeypatch, service, *responses)
-    rows = call_stats(service, name, ['a', None, 'b', 'a', 'missing'], username="tester")["results"]
+    rows = call_stats(service, name, ['a', None, 'b', 'a', 'missing'], username="tester", count_type=kind)["results"]
     assert [row["status"] for row in rows] == ["failed", "skipped", "failed", "skipped", "skipped"]
     assert all("counts" not in row for row in rows)
     assert "22003" in rows[0]["reason"] and "private" not in rows[0]["reason"]
@@ -134,7 +133,7 @@ def test_batch_write_failure_fails_pending_only_without_retry(monkeypatch, servi
 def test_initial_lookup_error_is_tool_error(monkeypatch, service, name, kind):
     conn = install_backend(monkeypatch, service, psycopg.OperationalError("private"))
     with pytest.raises(DatabaseError, match="统计操作失败") as exc:
-        call_stats(service, name, ['a'], username="tester")
+        call_stats(service, name, ['a'], username="tester", count_type=kind)
     assert "private" not in str(exc.value) and len(conn.statements) == 2
 
 
@@ -144,7 +143,7 @@ def test_invalid_batch_does_not_load_config(monkeypatch, service, name, kind, te
     settings = Mock(side_effect=AssertionError("no config"))
     monkeypatch.setattr(service, "get_settings", settings)
     with pytest.raises(ValueError):
-        call_stats(service, name, text, username="tester")
+        call_stats(service, name, text, username="tester", count_type=kind)
     settings.assert_not_called()
 
 
@@ -152,7 +151,7 @@ def test_invalid_batch_does_not_load_config(monkeypatch, service, name, kind, te
 def test_exact_word_bound_as_parameter(monkeypatch, service, name, kind):
     word = " a'; -- "
     conn = install_backend(monkeypatch, service, [database_row(word)], None, [stat_row(count_type=kind)])
-    assert call_stats(service, name, [word], username="tester")["results"][0]["word"] == word
+    assert call_stats(service, name, [word], username="tester", count_type=kind)["results"][0]["word"] == word
     assert conn.statements[1][1] == {"words": [word]}
     assert all(word not in query for query, _ in conn.statements)
 
@@ -164,11 +163,11 @@ def test_protocol_strict_array_and_structured_result(monkeypatch, service, name,
     async def run():
         async with Client(mcp) as client:
             tools = await client.list_tools()
-            assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss", "query_words", "query_users"}
+            assert {tool.name for tool in tools} == {"add_update_words", "count_words", "reset_word_miss", "query_words", "query_users"}
             tool = next(tool for tool in tools if tool.name == name)
             assert tool.inputSchema["properties"]["words"]["type"] == "array"
-            assert (await client.call_tool_mcp(name, {"username": "tester", "text": ["a"]})).isError
-            response = await client.call_tool_mcp(name, {"username": "tester", "words": ["a"]})
+            assert (await client.call_tool_mcp(name, {"username": "tester", "count_type": kind, "text": ["a"]})).isError
+            response = await client.call_tool_mcp(name, {"username": "tester", "count_type": kind, "words": ["a"]})
             assert not response.isError
             assert response.structuredContent["results"][0]["counts"] == {f"{kind}_count": 1}
     asyncio.run(run())
@@ -251,7 +250,7 @@ def test_merge_restores_original_order_without_mutating_inputs():
 @pytest.mark.parametrize("values", [[], [None, "", " ", 1, {"word": "a"}, "\ud800", "\x00"]])
 def test_shared_filtering_checks_user_without_stat_writes(monkeypatch, service, name, kind, values):
     conn = install_backend(monkeypatch, service)
-    result = call_stats(service, name, values, username="tester")
+    result = call_stats(service, name, values, username="tester", count_type=kind)
     expected = serialize_stats(prepare_word_list(values).skipped_results)
     assert result == expected
     assert len(conn.statements) == 1
@@ -263,7 +262,7 @@ def test_invalid_internal_batch_fails_before_database(monkeypatch, service, name
     config = Mock(side_effect=AssertionError("no config"))
     monkeypatch.setattr(service, "get_settings", config)
     with pytest.raises(ValueError, match="words"):
-        call_stats(service, name, 'not JSON', username="tester")
+        call_stats(service, name, 'not JSON', username="tester", count_type=kind)
     config.assert_not_called()
 
 
@@ -271,7 +270,7 @@ def test_invalid_internal_batch_fails_before_database(monkeypatch, service, name
 def test_same_preprocessing_and_original_index_across_tools(monkeypatch, service, name, kind):
     responses = [database_row("a"), stat_row(9, count_type=kind), stat_row(0, count_type=kind)] if service is reset_service else [[database_row("a")], None, [stat_row(1, count_type=kind)]]
     conn = install_backend(monkeypatch, service, *responses)
-    rows = call_stats(service, name, [None, 'a', 'a', {'word': 'b'}], username="tester")["results"]
+    rows = call_stats(service, name, [None, 'a', 'a', {'word': 'b'}], username="tester", count_type=kind)["results"]
     assert [row["index"] for row in rows] == [0, 1, 2, 3]
     assert [row["status"] for row in rows] == ["skipped", "updated", "skipped", "skipped"]
     assert rows[1]["word"] == "a" and "index=1" in rows[2]["reason"]
@@ -303,3 +302,61 @@ def test_reset_protocol_accepts_words_and_rejects_old_objects(monkeypatch):
             assert response.structuredContent["results"] == [
                 {"index": 0, "word": "a", "status": "updated", "counts": {"miss_count": 0}}]
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("value", [None, "", "unknown", "Usage", " usage", "miss ", 1, True, [], {}])
+def test_invalid_count_type_rejected_before_configuration(monkeypatch, value):
+    """内部调用也拒绝非法类型，空批次不能绕过校验。"""
+    config = Mock(side_effect=AssertionError("不能读取配置"))
+    monkeypatch.setattr(count_words_service, "get_settings", config)
+    with pytest.raises(ValueError, match="count_type"):
+        count_words_service.count_words([], "tester", value)
+    config.assert_not_called()
+
+
+def test_count_type_schema_and_protocol_validation(monkeypatch):
+    """枚举、中文说明与真实校验一致；缺失或非法类型不得进入 Service。"""
+    from thoth.common.count_types import COUNT_TYPE_DEFINITIONS
+
+    called = Mock(side_effect=AssertionError("不能进入业务层"))
+    monkeypatch.setattr(count_words_service, "count_words", called)
+
+    async def run():
+        async with Client(mcp) as client:
+            tool = next(tool for tool in await client.list_tools() if tool.name == "count_words")
+            schema = tool.inputSchema
+            assert set(schema["required"]) == {"username", "words", "count_type"}
+            field = schema["properties"]["count_type"]
+            assert field["type"] == "string"
+            assert set(field["enum"]) == {"usage", "miss"}
+            assert "default" not in field
+            for item in COUNT_TYPE_DEFINITIONS:
+                assert item.code in field["description"]
+                assert item.name in field["description"]
+                assert item.description in field["description"]
+            base = {"username": "tester", "words": []}
+            assert (await client.call_tool_mcp("count_words", base)).isError
+            for value in [None, "", "unknown", "Usage", " usage", "miss ", 1, True, [], {}]:
+                assert (await client.call_tool_mcp("count_words", {**base, "count_type": value})).isError
+
+    asyncio.run(run())
+    called.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["usage", "miss"])
+@pytest.mark.parametrize("error", [ValueError("配置错误"), DatabaseError("数据库连接失败")])
+def test_count_protocol_converts_business_errors(monkeypatch, kind, error):
+    """两类计数均将整批业务异常转换为 MCP 工具错误。"""
+    called = Mock(side_effect=error)
+    monkeypatch.setattr(count_words_service, "count_words", called)
+
+    async def run():
+        async with Client(mcp) as client:
+            result = await client.call_tool_mcp(
+                "count_words", {"username": "tester", "words": ["a"], "count_type": kind}
+            )
+            assert result.isError
+            assert str(error) in str(result)
+
+    asyncio.run(run())
+    called.assert_called_once_with(["a"], "tester", kind)

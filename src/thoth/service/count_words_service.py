@@ -1,9 +1,10 @@
-"""count_word_miss 专属服务：过滤输入，批量定位、初始化及加一，按原位置返回。"""
+"""count_words 专属服务：过滤输入，批量定位、初始化及加一，按原位置返回。"""
 
 import psycopg
 
 from thoth.service.user_lookup_service import validate_username, require_user
 from thoth.common.config import get_settings
+from thoth.common.count_types import validate_count_type
 from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.dao.word_count_tbl_mapper import WordCountTblMapper
 from thoth.db.connection import DatabaseError, open_connection
@@ -12,21 +13,23 @@ from thoth.entity import WordCountEntity
 from thoth.service.word_stats_input_service import prepare_word_list, merge_stats_results, stats_database_error
 
 
-def count_word_miss(words: list[str], username: str) -> list[StatsResult]:
-    """批量为 miss_count 加一，不开启跨语句事务，也不自动重试。
+def count_words(words: list[str], username: str, count_type: str) -> list[StatsResult]:
+    """批量为所选计数类型加一，不开启跨语句事务，也不自动重试。
 
     Args:
         username: 已手动创建的用户名，精确匹配，不存在时抛出 ValueError。
         words: 单词列表，空数组允许；无效和重复元素跳过。
+        count_type: 必填计数类型编码，仅增加所选类型，其他类型不变。
 
     Returns:
         按输入位置返回结果；初始化或加一失败时待计数项全部 failed，过滤项不变。
         初始化成功而加一失败时允许保留零值记录。
 
     Raises:
-        ValueError: 单词列表或用户名非法，或用户不存在。
+        ValueError: 单词列表、用户名或计数类型非法，或用户不存在。
         DatabaseError: 配置、连接或初始查询失败。
     """
+    validate_count_type(count_type)
     validate_username(username)
     preprocessed = prepare_word_list(words)
     items = preprocessed.pending_items
@@ -49,18 +52,22 @@ def count_word_miss(words: list[str], username: str) -> list[StatsResult]:
                    for item in items}
         if pending:
             mapper = WordCountTblMapper(connection)
-            entities = [WordCountEntity(user_id=user.id, word_id=record.id, count_type="miss") for record in pending.values()]
+            entities = [WordCountEntity(user_id=user.id, word_id=record.id, count_type=count_type) for record in pending.values()]
             try:
                 # 两条独立提交的批量写入；只有最终 RETURNING 中的记录算成功。
-                mapper.initialize_many(entities, user_id=user.id, count_type="miss")
-                updated = mapper.increment_many(entities, user_id=user.id, count_type="miss")
+                mapper.initialize_many(entities, user_id=user.id, count_type=count_type)
+                updated = mapper.increment_many(entities, user_id=user.id, count_type=count_type)
                 if any(record.count_value is None for record in updated):
                     raise DatabaseError("批量计数未返回有效数值。")
                 by_id = {record.word_id: record for record in updated}
                 for index, word in pending.items():
                     record = by_id.get(word.id)
                     results[index] = (
-                        StatsResult(index, word.word, "updated", miss_count=record.count_value)
+                        StatsResult(
+                            index, word.word, "updated",
+                            usage_count=record.count_value if count_type == "usage" else None,
+                            miss_count=record.count_value if count_type == "miss" else None,
+                        )
                         if record is not None else
                         StatsResult(index, word.word, "skipped", "记录在处理期间发生变化，未更新计数。")
                     )

@@ -17,13 +17,13 @@ from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.dao.word_count_tbl_mapper import WordCountTblMapper
 from thoth.entity import WordCountEntity
 from thoth.tools.word_stats_mapping import to_stats_results
-from thoth.service import count_word_usage_service, count_word_miss_service, reset_word_miss_service
+from thoth.service import count_words_service, reset_word_miss_service
 
 
-def call_stats(service, name, words, username="tester"):
+def call_stats(service, name, words, username="tester", *, count_type=None):
     """调用真实统计服务并通过响应子模型检查对外结果。"""
     return {"results": [row.model_dump(mode="json") for row in
-                        to_stats_results(getattr(service, name)(words, username))]}
+                        to_stats_results(getattr(service, name)(words, username, **({"count_type": count_type} if name == "count_words" else {})))]}
 
 
 def _load_test_dsn(root):
@@ -72,7 +72,7 @@ def database(monkeypatch):
                     connection.execute("SET statement_timeout = '10s'")
                     yield connection
 
-            for service in (count_word_usage_service, count_word_miss_service, reset_word_miss_service):
+            for service in (count_words_service, reset_word_miss_service):
                 monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace())
                 monkeypatch.setattr(service, "open_connection", connect)
             yield connect
@@ -80,13 +80,13 @@ def database(monkeypatch):
             admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
-CASES = [(count_word_usage_service, "count_word_usage", "usage"),
-         (count_word_miss_service, "count_word_miss", "miss")]
+CASES = [(count_words_service, "count_words", "usage"),
+         (count_words_service, "count_words", "miss")]
 
 
 def count_miss():
     """完整错误计数调用。"""
-    return call_stats(count_word_miss_service, "count_word_miss", ['a'], username="tester")["results"][0]
+    return call_stats(count_words_service, "count_words", ['a'], username="tester", count_type="miss")["results"][0]
 
 
 def reset():
@@ -101,7 +101,7 @@ def test_overlapping_concurrent_batches(database, service, name, kind):
 
     def increment(index):
         barrier.wait(timeout=10)
-        return call_stats(service, name, ["a", "b"] if index % 2 else ["b", "a"], username="tester")["results"]
+        return call_stats(service, name, ["a", "b"] if index % 2 else ["b", "a"], username="tester", count_type=kind)["results"]
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         batches = list(executor.map(increment, range(workers)))
@@ -115,7 +115,7 @@ def test_overlapping_concurrent_batches(database, service, name, kind):
 def test_failed_batch_preserves_zero_initialization(database, service, name, kind):
     with database() as connection:
         connection.execute("INSERT INTO word_count_tbl (user_id, word_id, count_type, count_value) SELECT 1, id, %s, 9223372036854775807 FROM word_tbl WHERE word='a'", (kind,))
-    rows = call_stats(service, name, ['b', 'a', None, 'missing'], username="tester")["results"]
+    rows = call_stats(service, name, ['b', 'a', None, 'missing'], username="tester", count_type=kind)["results"]
     assert [row["status"] for row in rows] == ["failed", "failed", "skipped", "skipped"]
     assert all("counts" not in row for row in rows)
     with database() as connection:
@@ -147,7 +147,7 @@ def test_reset_noop_preserves_audit_and_usage(database):
     with database() as connection:
         assert connection.execute("SELECT count(*) FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchone() == (0,)
     assert count_miss()["counts"] == {"miss_count": 1}
-    assert call_stats(count_word_usage_service, "count_word_usage", ['a'], username="tester")["results"][0]["counts"] == {"usage_count": 1}
+    assert call_stats(count_words_service, "count_words", ['a'], username="tester", count_type="usage")["results"][0]["counts"] == {"usage_count": 1}
     assert reset()["counts"] == {"miss_count": 0}
     with database() as connection:
         before = connection.execute("SELECT * FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchone()
@@ -212,16 +212,16 @@ def test_concurrent_users_and_types_remain_isolated(database):
 
     def increment(task):
         """各任务独立执行指定次数，使用不同期望值识别串写或丢失更新。"""
-        username, service, name, count = task
+        username, service, name, kind, count = task
         barrier.wait(timeout=10)
         for _ in range(count):
-            assert call_stats(service, name, ['a'], username)["results"][0]["status"] == "updated"
+            assert call_stats(service, name, ['a'], username, count_type=kind)["results"][0]["status"] == "updated"
 
     tasks = [
-        ('tester', count_word_miss_service, 'count_word_miss', 2),
-        ('tester', count_word_usage_service, 'count_word_usage', 3),
-        ('other', count_word_miss_service, 'count_word_miss', 4),
-        ('other', count_word_usage_service, 'count_word_usage', 5),
+        ('tester', count_words_service, 'count_words', 'miss', 2),
+        ('tester', count_words_service, 'count_words', 'usage', 3),
+        ('other', count_words_service, 'count_words', 'miss', 4),
+        ('other', count_words_service, 'count_words', 'usage', 5),
     ]
     with ThreadPoolExecutor(max_workers=4) as executor:
         list(executor.map(increment, tasks))
@@ -231,3 +231,12 @@ def test_concurrent_users_and_types_remain_isolated(database):
     assert reset()["counts"] == {"miss_count": 0}
     with database() as connection:
         assert connection.execute(query).fetchall() == [(1, 1, 'miss', 0), (1, 1, 'usage', 3), (2, 1, 'miss', 4), (2, 1, 'usage', 5)]
+
+
+def test_count_type_definitions_match_database_dictionary(database):
+    """代码支持的类型及说明必须与初始化后的数据库字典完全一致。"""
+    from thoth.common.count_types import COUNT_TYPE_DEFINITIONS
+
+    with database() as connection:
+        rows = connection.execute("SELECT code, description FROM count_type_tbl").fetchall()
+    assert set(rows) == {(item.code, item.description) for item in COUNT_TYPE_DEFINITIONS}

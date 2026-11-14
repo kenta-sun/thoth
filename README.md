@@ -39,7 +39,7 @@ Dockerfile 设置容器内监听 `0.0.0.0:8000`，Compose 仅发布宿主机 `12
 
 ## 用户与统计归属
 
-`query_words`、`count_word_usage`、`count_word_miss` 和 `reset_word_miss` 要求独立的 `username`，与 `words` 或 `query` 并列，不增加最外层 request 包装。
+`query_words`、`count_words` 和 `reset_word_miss` 要求独立的 `username`，与 `words` 或 `query` 并列，不增加最外层 request 包装。
 `add_update_words` 只接收 `words`，不要求用户名，也不校验用户是否存在。
 用户名按原文区分大小写，允许中文，长度为 1～128 字符，不能含首尾空白。
 用户名须手动通过 SQL 添加；非法或不存在时返回工具错误，不自动创建或选择默认用户。
@@ -48,8 +48,7 @@ Dockerfile 设置容器内监听 `0.0.0.0:8000`，Compose 仅发布宿主机 `12
 | 工具 | 业务参数 | 返回值 |
 | --- | --- | --- |
 | `add_update_words` | 非空 `words` 对象数组 | 单词保存结果 |
-| `count_word_usage` | `words` 字符串数组 | 使用计数结果 |
-| `count_word_miss` | `words` 字符串数组 | 陌生计数结果 |
+| `count_words` | `words` 字符串数组、`count_type` 计数类型 | 所选类型的计数结果 |
 | `reset_word_miss` | `words` 字符串数组 | 清零结果 |
 | `query_words` | `query` 查询对象，全部查询传 `{}` | 选定字段的单词结果 |
 | `query_users` | 无参数 | 已有用户名 |
@@ -161,11 +160,11 @@ ON CONFLICT (username) DO NOTHING;
 
 ## 单词统计
 
-`count_word_usage` 为使用次数加一，`count_word_miss` 为陌生次数加一。
-两者直接接受单词字符串数组：
+`count_words` 为所选类型的计数加一：`usage` 为使用次数，`miss` 为陌生次数。
+`count_type` 必填且无默认值，一次仅更新一种类型，不联动另一种计数。直接接受单词字符串数组：
 
 ```json
-{"username":"ethan","words":["食べる","飲む"]}
+{"username":"ethan","words":["食べる","飲む"],"count_type":"usage"}
 ```
 
 空数组正常返回空 `results`。数组中的 null、数字、对象等非字符串值拒绝整批。
@@ -173,13 +172,13 @@ ON CONFLICT (username) DO NOTHING;
 有效词按原文精确匹配，不去首尾空格；不存在或已删除的单词跳过。
 
 每批先查询用户，再通常执行三条统计 SQL：查询单词主表、批量插入缺失的零值统计行、批量将计数加一。
-只操作工具对应的统计表；写入时再次限定主表存在且未删除。
+只操作 `word_count_tbl` 中指定用户和 `count_type` 的记录；写入时再次限定主表存在且未删除。
 使用 autocommit，不设置跨语句或逐词事务。初始化成功而加一失败时，零值行保留。
 批量写入失败则待计数项全部 failed，已过滤项仍 skipped；不自动降级逐项重试。
 主表并发变化可能导致跳过或整条语句失败，不承诺跨语句快照。
 
 返回 `results`，按原输入顺序包含零基 `index`、`word`、`status`。
-updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipped 和 failed 附 `reason`。
+updated 项的 `counts` 只包含所选类型的字段（`usage_count` 或 `miss_count`）及更新后计数，skipped 和 failed 附 `reason`。
 无法安全输出的 word 为 null；只有最终 RETURNING 中的记录报告成功，处理期间未更新到
 的记录返回 skipped。每次成功调用均独立加一，没有请求幂等或自动重试保证。
 配置、连接、初始查询失败，以及参数结构或类型错误返回工具错误。
@@ -191,13 +190,17 @@ updated 项的 `counts` 只包含本工具对应字段及更新后计数，skipp
 ```
 
 清零仅操作已有错误计数，每词独立事务；没有记录或已经为零时跳过，不创建记录，
-不修改零值行审计信息，不影响使用次数。预处理与两个计数工具一致：无效业务文本跳过，
+不修改零值行审计信息，不影响使用次数。预处理与计数工具一致：无效业务文本跳过，
 重复词仅首次处理，后续项注明首次下标；空数组或全部过滤时仍连接数据库校验用户，但不执行单词查询和统计写入。
 成功或已有零值时返回 `counts: {"miss_count": 0}`；无统计记录时省略 counts。
 
-三个专属 Service 共用 `prepare_word_list` 过滤与去重，保留原始 index。
+两个专属 Service 共用 `prepare_word_list` 过滤与去重，保留原始 index。
 业务结果由入口转换为响应子模型，数据库记录由各表 entity 承载。
-数据库需预先存在两张统计表，服务不会自动建表。
+数据库需预先存在 `count_type_tbl` 字典表和 `word_count_tbl` 统计表，服务不会自动建表。
+
+计数类型在 `common/count_types.py` 集中维护，参数说明、Schema 枚举和校验共用这份定义，注册工具时不查询数据库。
+新增类型需同步维护代码定义、结果映射及数据库字典；集成测试检查代码编码及说明与数据库预置数据一致。
+原 `count_word_usage`、`count_word_miss` 工具已移除，调用方需改用 `count_words` 并显式传入 `count_type`。
 
 ## query_words
 

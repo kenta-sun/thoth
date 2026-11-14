@@ -1,4 +1,4 @@
-"""统计响应子模型：三个统计工具共用逐项状态和计数结构。"""
+"""统计响应子模型：计数和清零工具共用逐项状态和计数结构。"""
 
 from typing import Literal
 from pydantic import Field

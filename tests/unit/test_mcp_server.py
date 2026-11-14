@@ -101,7 +101,7 @@ def test_tools_are_exposed_and_save_description_explains_default(backend):
             return await client.list_tools()
     tools = asyncio.run(run())
 
-    assert {tool.name for tool in tools} == {"add_update_words", "count_word_usage", "count_word_miss", "reset_word_miss", "query_words", "query_users"}
+    assert {tool.name for tool in tools} == {"add_update_words", "count_words", "reset_word_miss", "query_words", "query_users"}
     tool = next(tool for tool in tools if tool.name == "add_update_words")
     assert tool.inputSchema["required"] == ["words"]
     assert set(tool.inputSchema["properties"]) == {"words"}

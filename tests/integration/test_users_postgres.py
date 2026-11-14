@@ -12,7 +12,7 @@ import pytest
 
 from tests.integration.test_word_stats_postgres import _load_test_dsn, _connect_test_database
 from thoth.service import (query_users_service, query_words_service, add_update_words_service,
-                          count_word_usage_service, count_word_miss_service, reset_word_miss_service)
+                          count_words_service, reset_word_miss_service)
 from thoth.common.tags import TAG_DEFINITIONS, FAMILIARITY_TAG_DEFINITIONS
 from thoth.dto.request.query_words_request import WordQueryInput
 from thoth.dto.request.add_update_words_request import WordWriteInput
@@ -43,7 +43,7 @@ def rebuilt(monkeypatch):
                     yield connection
 
             for service in (query_users_service, query_words_service, add_update_words_service,
-                            count_word_usage_service, count_word_miss_service, reset_word_miss_service):
+                            count_words_service, reset_word_miss_service):
                 monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace())
                 monkeypatch.setattr(service, "open_connection", connect)
             yield connect
@@ -82,14 +82,14 @@ def test_two_users_share_words_but_not_counts_or_reset(rebuilt):
     seed(rebuilt)
     assert query_users_tools.query_users().model_dump(mode="json") == {"results": [{"username": "甲"}, {"username": "乙"}]}
     for _ in range(3):
-        count_word_miss_service.count_word_miss(['a'], "甲")
-    count_word_usage_service.count_word_usage(['a'], "甲")
+        count_words_service.count_words(['a'], "甲", "miss")
+    count_words_service.count_words(['a'], "甲", "usage")
     assert query("乙", fields=["word", "usage_count", "miss_count"]) == [
         {"word": "a", "usage_count": 0, "miss_count": 0}, {"word": "b", "usage_count": 0, "miss_count": 0}]
     with rebuilt() as connection:
         assert connection.execute("SELECT count(*) FROM word_count_tbl WHERE user_id=2 AND count_type='miss'").fetchone() == (0,)
-    count_word_miss_service.count_word_miss(['b'], "乙")
-    count_word_usage_service.count_word_usage(['b'], "乙")
+    count_words_service.count_words(['b'], "乙", "miss")
+    count_words_service.count_words(['b'], "乙", "usage")
     for field in ("miss_count", "usage_count"):
         assert query("甲", fields=["word"], sort=[{"field": field, "direction": "desc"}], limit=1) == [{"word": "a"}]
         assert query("乙", fields=["word"], sort=[{"field": field, "direction": "desc"}], limit=1) == [{"word": "b"}]
@@ -127,7 +127,7 @@ def test_user_and_statistics_constraints(rebuilt):
 
 def test_rebuild_removes_old_data_and_reinitializes(rebuilt):
     seed(rebuilt)
-    count_word_miss_service.count_word_miss(['a'], "甲")
+    count_words_service.count_words(['a'], "甲", "miss")
     with rebuilt() as connection:
         connection.execute((ROOT / "sql/rebuild_all.sql").read_text())
         assert connection.execute("SELECT count(*) FROM word_tbl").fetchone() == (0,)
@@ -139,7 +139,7 @@ def test_rebuild_removes_old_data_and_reinitializes(rebuilt):
 
 def test_external_dependency_rolls_back_whole_rebuild(rebuilt):
     seed(rebuilt)
-    count_word_miss_service.count_word_miss(['a'], "甲")
+    count_words_service.count_words(['a'], "甲", "miss")
     with rebuilt() as connection:
         connection.execute("CREATE VIEW retained_words AS SELECT word FROM word_tbl")
         with pytest.raises(psycopg.errors.DependentObjectsStillExist):

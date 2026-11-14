@@ -13,7 +13,7 @@ from pydantic import TypeAdapter
 
 from thoth.mcp_server import mcp
 from thoth.service import (
-    add_update_words_service, count_word_usage_service, count_word_miss_service,
+    add_update_words_service, count_words_service,
     reset_word_miss_service, query_words_service, query_users_service,
 )
 from thoth.dto.request.add_update_words_request import WordWriteInput
@@ -26,14 +26,14 @@ from thoth.tools.add_update_words_tools import to_write_commands
 from thoth.tools.query_words_tools import to_query_request
 
 
-@pytest.mark.parametrize("name,service,parameter", [
-    ("count_word_usage", count_word_usage_service, "words"),
-    ("count_word_miss", count_word_miss_service, "words"),
-    ("reset_word_miss", reset_word_miss_service, "words"),
-    ("add_update_words", add_update_words_service, "words"),
-    ("query_words", query_words_service, "query"),
+@pytest.mark.parametrize("name,service,parameter,kind", [
+    ("count_words", count_words_service, "words", "usage"),
+    ("count_words", count_words_service, "words", "miss"),
+    ("reset_word_miss", reset_word_miss_service, "words", None),
+    ("add_update_words", add_update_words_service, "words", None),
+    ("query_words", query_words_service, "query", None),
 ])
-def test_protocol_structure_errors_never_enter_service(monkeypatch, name, service, parameter):
+def test_protocol_structure_errors_never_enter_service(monkeypatch, name, service, parameter, kind):
     called = Mock(side_effect=AssertionError("结构错误不得调用业务层"))
     monkeypatch.setattr(service, name, called)
     cases = [None, "[]", 1]
@@ -53,6 +53,8 @@ def test_protocol_structure_errors_never_enter_service(monkeypatch, name, servic
 
     async def run():
         base_args = {} if name == "add_update_words" else {"username": "tester"}
+        if kind:
+            base_args["count_type"] = kind
         async with Client(mcp) as client:
             for value in cases:
                 result = await client.call_tool_mcp(name, {**base_args, parameter: value})
@@ -84,14 +86,14 @@ def test_query_counts_are_strict_bigints(value):
         WordQueryInput.model_validate({"where": {"miss_count": {"eq": value}}})
 
 
-def test_every_tool_output_matches_schema_and_projection_keeps_null(monkeypatch):
+@pytest.mark.parametrize("kind", ["usage", "miss"])
+def test_every_tool_output_matches_schema_and_projection_keeps_null(monkeypatch, kind):
     monkeypatch.setattr(add_update_words_service, "add_update_words", Mock(return_value=WordBatchResult([
         WordItemResult(0, None, "failed", "无效文本"), WordItemResult(1, "a", "created")
     ])))
-    for service, name in [(count_word_usage_service, "count_word_usage"),
-                          (count_word_miss_service, "count_word_miss"),
+    for service, name in [(count_words_service, "count_words"),
                           (reset_word_miss_service, "reset_word_miss")]:
-        field = "usage_count" if name == "count_word_usage" else "miss_count"
+        field = f"{kind}_count" if name == "count_words" else "miss_count"
         monkeypatch.setattr(service, name, Mock(return_value=[
             StatsResult(0, "a", "updated", **{field: 0}), StatsResult(1, None, "skipped", "无效文本")]))
     monkeypatch.setattr(query_words_service, "query_words", Mock(return_value=[QueryWordResult(word=WordEntity(meaning=None))]))
@@ -109,6 +111,8 @@ def test_every_tool_output_matches_schema_and_projection_keeps_null(monkeypatch)
                     args = {"words": [{"word": "a", "tags": ["v"]}]}
                 else:
                     args = {"username": "tester", "words": ["a"]}
+                if name == "count_words":
+                    args["count_type"] = kind
                 result = await client.call_tool_mcp(name, args)
                 assert not result.isError, str(result)
                 jsonschema.validate(result.structuredContent, tool.outputSchema)
