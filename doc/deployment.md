@@ -98,6 +98,14 @@ ON CONFLICT (username) DO NOTHING;
 
 ## 4. 构建镜像
 
+如果修改了 `pyproject.toml` 中的版本号或依赖，先在项目根目录同步锁文件：
+
+```shell
+uv sync
+```
+
+Docker 构建使用 `uv sync --locked`，不会自动更新锁文件；`uv.lock` 与 `pyproject.toml` 不一致会导致构建失败。
+
 执行这条命令，根据 Dockerfile 构建 `thoth:local` 镜像。首次构建需要联网下载基础镜像和 Python 依赖：
 
 ```shell
@@ -171,7 +179,15 @@ Codex 需信任该项目才能加载项目配置；保存后重启应用，在�
 
 ## 8. 更新、重启与停止
 
-修改代码或 `.env.prd` 后，先重新构建镜像：
+发布新版本时，修改 `pyproject.toml` 中的版本号后，先在项目根目录执行：
+
+```shell
+uv lock
+```
+
+确认 `pyproject.toml` 和 `uv.lock` 已同步，并一并提交版本变更。Docker 构建使用 `--locked`，锁文件未同步会导致构建失败；如果已经执行过 `uv sync` 完成同步，可跳过上述命令。
+
+修改代码或 `.env.prd` 后，重新构建镜像：
 
 ```shell
 docker compose build
