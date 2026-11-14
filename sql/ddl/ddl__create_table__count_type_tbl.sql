@@ -14,7 +14,7 @@ CREATE TABLE count_type_tbl
 
 COMMENT ON TABLE count_type_tbl IS '计数类型表';
 
-COMMENT ON COLUMN count_type_tbl.code IS '计数类型编码，例如miss、usage，作为主键';
+COMMENT ON COLUMN count_type_tbl.code IS '计数类型';
 COMMENT ON COLUMN count_type_tbl.description IS '计数类型的中文说明';
 COMMENT ON COLUMN count_type_tbl.created_at IS '创建时间';
 COMMENT ON COLUMN count_type_tbl.updated_at IS '最后更新时间';
