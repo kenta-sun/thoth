@@ -29,3 +29,21 @@ docker run -d \
 .venv/bin/python -m thoth.utils.generate_rebuild_sql
 .venv/bin/python -m thoth.utils.generate_rebuild_sql --check
 ```
+
+## 修改项目版本号
+
+手动修改 `pyproject.toml` 中 `[project]` 下的 `version` 后，在项目根目录执行以下命令。无需手动修改 `uv.lock` 或虚拟环境中的版本号。
+
+只同步锁文件中的项目版本号：
+
+```shell
+uv lock
+```
+
+同步锁文件，并更新本地虚拟环境（`.venv`）中的项目安装信息：
+
+```shell
+uv sync
+```
+
+需要同步本地环境时，直接执行 `uv sync` 即可，不必先执行 `uv lock`。提交版本变更时一并提交 `pyproject.toml` 和 `uv.lock`；Docker 构建使用 `--locked`，要求锁文件与项目配置保持一致。
