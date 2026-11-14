@@ -12,27 +12,34 @@ from thoth.dao.word_tag_tbl_mapper import WordTagTblMapper
 from thoth.dao.word_tbl_mapper import WordTblMapper
 from thoth.db.connection import DatabaseError, open_connection
 from thoth.dto.word import SaveResult, WordBatchResult, WordInput, WordItemResult, WordWriteCommand
-from thoth.entity import WordEntity, WordTagEntity
+from thoth.entity import WordEntity, WordTagEntity, WordFamEntity
+from thoth.dao.word_fam_tbl_mapper import WordFamTblMapper
+from thoth.common.tags import TAG_DEFINITIONS, FAMILIARITY_TAG_DEFINITIONS
+from thoth.service.user_lookup_service import validate_username, require_user
 
 INFORMATION_FIELDS = ("common_form", "hiragana", "meaning")
 
 
-def add_update_words(words: list[WordWriteCommand]) -> WordBatchResult:
-    """归一化写入指令并逐项保存，每项单词与标签共用独立事务。
+def add_update_words(words: list[WordWriteCommand], username: str) -> WordBatchResult:
+    """归一化写入指令并逐项保存，每项单词、普通标签与用户熟悉度共用独立事务。
 
     Args:
         words: 结构已校验的内部写入指令，不包含接口模型。
+        username: 已存在的用户名，指定本批熟悉度归属。
 
     Returns:
         按输入顺序排列的业务结果；单项失败不会中断其他项。
 
     Raises:
+        ValueError: 用户名非法或用户不存在。
         DatabaseError: 配置、连接或批量查询失败，消息已脱敏。
     """
+    validate_username(username)
     items = prepare_word_inputs(words)
     settings = get_settings()
     with open_connection(settings) as connection:
-        return save_word_batch(items, connection)
+        user = require_user(connection, username)
+        return save_word_batch(items, connection, user_id=user.id)
 
 
 def prepare_word_inputs(words: list[WordWriteCommand]) -> list[WordInput]:
@@ -75,7 +82,7 @@ def validate_word_input(item: WordWriteCommand) -> WordInput:
             hiragana=_information_value(item.hiragana, "hiragana"),
             meaning=_information_value(item.meaning, "meaning"),
         ),
-        action=item.action,
+        action=item.action, fam=item.fam,
         tags=tuple(dict.fromkeys(item.tags)) if item.tags is not None else None,
     )
 
@@ -169,6 +176,7 @@ def _insert_word_record(
     _validate_new_word_fields(request.entity, request.tags)
     inserted = repository.insert(request.entity)
     if inserted is None:
+        _reject_deleted(repository.find_by_word_for_update(request.entity.word))
         return None
     return SaveResult("created", entity=inserted)
 
@@ -216,6 +224,40 @@ def _save_word_record(
                 return inserted
 
 
+def _reject_deleted(entity: WordEntity | None) -> None:
+    """优先拒绝已删除单词，不允许更新共享信息或用户熟悉度。"""
+    if entity is not None and entity.status_code == "D":
+        raise ValueError("该单词已被删除，不允许操作。")
+
+
+def _validate_tags(request: WordInput, mapper: TagTblMapper) -> None:
+    """先报告全部不存在的标签，再检查普通标签和熟悉度标签的用途。"""
+    codes = list(dict.fromkeys([*(request.tags or ()), *([request.fam] if request.fam is not None else [])]))
+    if not codes:
+        return
+    existing = {tag.code for tag in mapper.find_by_codes(codes)}
+    missing = [code for code in codes if code not in existing]
+    if missing:
+        raise ValueError(f"标签不存在：{', '.join(missing)}。")
+    ordinary = {tag.code for tag in TAG_DEFINITIONS}
+    familiarity = {tag.code for tag in FAMILIARITY_TAG_DEFINITIONS}
+    invalid = [code for code in (request.tags or ()) if code not in ordinary]
+    if invalid:
+        raise ValueError(f"tags 只接受普通标签，类型不符：{', '.join(invalid)}。")
+    if request.fam is not None and request.fam not in familiarity:
+        raise ValueError(f"fam 只接受熟悉度标签，类型不符：{request.fam}。")
+
+
+def _save_familiarity(connection: psycopg.Connection, user_id: int, word_id: int, code: str) -> str:
+    """持有单词行锁时新增或更新用户熟悉度；相同编码不更新审计字段。"""
+    mapper = WordFamTblMapper(connection)
+    current = mapper.find_for_update(user_id=user_id, word_id=word_id)
+    if current is not None and current.tag_code == code:
+        return "unchanged"
+    mapper.save(WordFamEntity(user_id=user_id, word_id=word_id, tag_code=code))
+    return "created" if current is None else "updated"
+
+
 def _save_word_item(
     request: WordInput,
     repository: WordTblMapper,
@@ -225,11 +267,12 @@ def _save_word_item(
     *,
     index: int,
     exists: bool,
+    user_id: int,
 ) -> WordItemResult:
     """以单个单词为事务边界保存信息和完整标签列表，提交后才返回成功。
 
     调用方须提供无外层事务的 autocommit 连接，各 Mapper 必须共用该连接。
-    提供标签时先检查存在性，再保存单词并替换全部标签；省略时只更新单词信息。
+    先锁定单词并拒绝删除状态，再校验标签及保存；仅提供熟悉度时不更新共享词条。
 
     Args:
         request: 已通过输入校验和批内查重的请求；标签列表为 None 表示更新时保留原标签。
@@ -239,6 +282,7 @@ def _save_word_item(
         connection: 用于开启本项事务的数据库连接。
         index: 原输入数组中的零基下标。
         exists: 批量查询时单词是否存在；保存时仍处理并发变化。
+        user_id: 已存在的用户主键，限定熟悉度归属。
 
     Returns:
         提交后的保存结果；标签不存在、必填字段缺失或数据库错误均在回滚后
@@ -249,15 +293,20 @@ def _save_word_item(
     """
     try:
         with connection.transaction():
-            # 省略标签时不查询或改写关联；显式提供时，即使 create 将跳过也须校验。
-            if request.tags is not None:
-                existing_tags = {
-                    tag.code for tag in tag_mapper.find_by_codes(list(request.tags))
-                }
-                missing_tags = [code for code in request.tags if code not in existing_tags]
-                if missing_tags:
-                    raise ValueError(f"标签不存在：{', '.join(missing_tags)}。请使用已有的合适标签。")
-            saved = _save_word_record(request, repository, exists=exists)
+            # 先锁定并检查当前状态，防止标签写入期间单词被标记删除。
+            current = repository.find_by_word_for_update(request.entity.word)
+            _reject_deleted(current)
+            if exists and current is None:
+                raise DatabaseError("保存期间单词记录发生变化，请重试。")
+            _validate_tags(request, tag_mapper)
+            fam_status = None
+            if (current is not None and request.action == "update" and request.fam is not None
+                    and request.tags is None
+                    and all(getattr(request.entity, field) is None for field in INFORMATION_FIELDS)):
+                # 仅标注用户熟悉度，不触碰共享词条的内容和审计字段。
+                saved = SaveResult("updated", entity=current)
+            else:
+                saved = _save_word_record(request, repository, exists=current is not None)
             if saved.status != "skipped":
                 if saved.entity is None or saved.entity.id is None:
                     raise DatabaseError("保存单词未返回有效 ID，请重试。")
@@ -271,9 +320,11 @@ def _save_word_item(
                         )
                         for code in request.tags
                     ])
+                if request.fam is not None:
+                    fam_status = _save_familiarity(connection, user_id, saved.entity.id, request.fam)
         return WordItemResult(
             index=index, word=request.entity.word,
-            status=saved.status, reason=saved.reason,
+            status=saved.status, reason=saved.reason, fam_status=fam_status,
         )
     except MissingWordFieldsError as exc:
         return WordItemResult(
@@ -283,7 +334,7 @@ def _save_word_item(
     except (ValueError, DatabaseError, psycopg.Error) as exc:
         # 必须在 transaction 上下文退出后转换错误，避免吞掉异常而提交部分修改。
         error = (
-            _database_error("保存单词及标签失败", exc)
+            _database_error("保存单词、标签及熟悉度失败", exc)
             if isinstance(exc, psycopg.Error) else exc
         )
         return WordItemResult(
@@ -292,13 +343,14 @@ def _save_word_item(
 
 
 def save_word_batch(
-    items: list[WordInput], connection: psycopg.Connection,
+    items: list[WordInput], connection: psycopg.Connection, *, user_id: int,
 ) -> WordBatchResult:
     """批量查询有效词，再在同一连接上逐项开启独立事务保存单词及标签。
 
     Args:
         items: prepare_word_inputs 返回的业务输入列表；空列表或全部无效时不访问数据库。
         connection: 已启用 autocommit 且没有外层事务的连接，保证每项独立提交。
+        user_id: 已校验存在的用户主键，限定熟悉度记录归属。
 
     Returns:
         与输入等长且顺序一致的批次结果，单项失败保留在结果中并继续下一项。
@@ -325,7 +377,7 @@ def save_word_batch(
     return WordBatchResult(results=[
         item if isinstance(item, WordItemResult) else _save_word_item(
             item, repository, tag_mapper, word_tag_mapper, connection,
-            index=index, exists=item.entity.word in existing_words,
+            index=index, exists=item.entity.word in existing_words, user_id=user_id,
         )
         for index, item in enumerate(prepared)
     ])

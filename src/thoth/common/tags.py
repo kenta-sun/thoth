@@ -1,4 +1,4 @@
-"""公共标签定义：词性标签供工具说明使用，内部熟悉度标签独立维护；数据库一致性由集成测试检查。"""
+"""公共标签定义：普通标签与熟悉度标签分别供对应请求字段说明和业务校验使用；数据库一致性由集成测试检查。"""
 
 from dataclasses import dataclass
 
@@ -25,7 +25,7 @@ TAG_DEFINITIONS = (
     TagDefinition("num", "数量词", "数量詞"),
 )
 
-# 内部熟悉度标签不加入写入或查询请求的标签说明。
+# 熟悉度标签独立用于 fam 字段，不加入普通 tags 字段的选项。
 FAMILIARITY_TAG_DEFINITIONS = (
     TagDefinition("fam_new", "不熟悉", "未習得"),
     TagDefinition("fam_rep", "反复不熟悉", "繰り返し間違える"),

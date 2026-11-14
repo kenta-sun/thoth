@@ -12,7 +12,7 @@ from thoth.db.connection import DatabaseError
 from thoth.dto.query_words import QueryRequest
 from thoth.common.query_words import QUERY_FIELDS
 
-from thoth.service import (query_words_service,
+from thoth.service import (query_words_service, add_update_words_service,
                           count_words_service,
                           reset_word_miss_service, query_users_service)
 from thoth.service.user_lookup_service import validate_username
@@ -21,6 +21,7 @@ from thoth.utils.generate_rebuild_sql import OUTPUT, render_rebuild_sql
 from tests.unit.test_word_repository import ScriptedConnection
 
 CASES = [
+    (add_update_words_service, "add_update_words", [], None),
     (query_words_service, "query_words", QueryRequest(QUERY_FIELDS), None),
     (count_words_service, "count_words", [], "usage"),
     (count_words_service, "count_words", [], "miss"),

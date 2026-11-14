@@ -3,7 +3,7 @@
 from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
-from thoth.common.tags import TAG_OPTIONS_DESCRIPTION
+from thoth.common.tags import TAG_OPTIONS_DESCRIPTION, FAMILIARITY_TAG_DEFINITIONS
 from thoth.dto.request.common import RequestModel
 
 TagCode = Annotated[str, Field(pattern=r"^[A-Za-z0-9_]{1,32}$", description="已有标签编码，1～32 位英文字母、数字或下划线。")]
@@ -18,6 +18,16 @@ class WordWriteInput(RequestModel):
     meaning: str | None = Field(default=None, description="中文释义；新增时须有有效值，更新时省略、null 或空白均保留原值。")
     tags: Annotated[list[TagCode], Field(min_length=1)] | SkipJsonSchema[None] = Field(default=None, description="create 必填；update 时省略则保留原标签，转为新增时仍必填。提供时为完整的新标签集合，重复编码去重并替换全部旧标签；不接受 null 或空数组。" + TAG_OPTIONS_DESCRIPTION)
     action: Literal["create", "update"] = Field(default="create", description="create：不存在则新增，已存在则跳过；update：不存在则新增，已存在则局部更新。")
+
+    fam: TagCode | SkipJsonSchema[None] = Field(default=None, description="当前用户的熟悉度标签；省略则保留，不接受 null 或空字符串。可用编码：" + "；".join(f"{tag.code}={tag.zh_name}" for tag in FAMILIARITY_TAG_DEFINITIONS))
+
+    @field_validator("fam")
+    @classmethod
+    def validate_supplied_fam(cls, value: str | None) -> str:
+        """显式提供熟悉度时拒绝 null，省略时不修改记录。"""
+        if value is None:
+            raise ValueError("fam 不接受 null；不修改熟悉度请省略该字段。")
+        return value
 
     @field_validator("tags")
     @classmethod

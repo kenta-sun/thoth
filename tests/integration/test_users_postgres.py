@@ -58,7 +58,7 @@ def seed(connect):
         connection.execute("INSERT INTO user_tbl (username) VALUES ('甲'), ('乙')")
     payload = [{"word": word, "common_form": word, "hiragana": "かな", "meaning": "释义", "tags": ["n"]}
                for word in ("a", "b")]
-    result = add_update_words_tools.add_update_words(words=[WordWriteInput.model_validate(item) for item in payload]).model_dump(mode="json")
+    result = add_update_words_tools.add_update_words(username="甲", words=[WordWriteInput.model_validate(item) for item in payload]).model_dump(mode="json")
     assert all(row["status"] == "created" for row in result["results"])
 
 
@@ -98,7 +98,7 @@ def test_two_users_share_words_but_not_counts_or_reset(rebuilt):
     assert query("甲", fields=["miss_count"], where={"word": {"eq": "a"}}) == [{"miss_count": 3}]
     assert query("乙", fields=["miss_count"], where={"word": {"eq": "b"}}) == [{"miss_count": 0}]
     update = [WordWriteInput(word="a", meaning="共享的新释义", tags=["v"], action="update")]
-    add_update_words_tools.add_update_words(words=update)
+    add_update_words_tools.add_update_words(username="甲", words=update)
     assert query("甲", fields=["meaning", "tags"], where={"word": {"eq": "a"}}) == [{"meaning": "共享的新释义", "tags": ["v"]}]
 
 
@@ -148,3 +148,85 @@ def test_external_dependency_rolls_back_whole_rebuild(rebuilt):
         # 统计表在词表之前删除，回滚须连同已删除的表和数据一起恢复。
         assert connection.execute("SELECT count_value FROM word_count_tbl WHERE user_id=1 AND count_type='miss'").fetchall() == [(1,)]
         assert connection.execute("SELECT count(*) FROM retained_words").fetchone() == (2,)
+
+
+def write_fam(username, word, code, **fields):
+    """通过工具入口标注熟悉度，保留真实校验和事务。"""
+    return add_update_words_tools.add_update_words(
+        username=username,
+        words=[WordWriteInput(word=word, fam=code, action='update', **fields)],
+    ).model_dump(mode='json')['results'][0]
+
+
+def test_familiarity_user_isolation_idempotence_and_shared_word_audit(rebuilt):
+    """熟悉度按用户隔离；重复标注和熟悉度更新均不改变共享词条审计值。"""
+    seed(rebuilt)
+    with rebuilt() as connection:
+        before = connection.execute("SELECT * FROM word_tbl WHERE word='a'").fetchone()
+    assert write_fam('甲', 'a', 'fam_new')['fam_status'] == 'created'
+    assert write_fam('乙', 'a', 'fam_ok')['fam_status'] == 'created'
+    with rebuilt() as connection:
+        first = connection.execute('SELECT * FROM word_fam_tbl ORDER BY user_id').fetchall()
+    assert write_fam('甲', 'a', 'fam_new')['fam_status'] == 'unchanged'
+    with rebuilt() as connection:
+        assert connection.execute('SELECT * FROM word_fam_tbl ORDER BY user_id').fetchall() == first
+    assert write_fam('甲', 'a', 'fam_rep')['fam_status'] == 'updated'
+    with rebuilt() as connection:
+        assert connection.execute('SELECT user_id, tag_code FROM word_fam_tbl ORDER BY user_id').fetchall() == [(1, 'fam_rep'), (2, 'fam_ok')]
+        assert connection.execute("SELECT * FROM word_tbl WHERE word='a'").fetchone() == before
+        assert connection.execute('SELECT count(*) FROM word_count_tbl').fetchone() == (0,)
+
+
+def test_familiarity_create_and_transaction_failure(rebuilt):
+    """新增熟悉度失败时，词条和普通标签也回滚，后续项仍可提交。"""
+    seed(rebuilt)
+    with rebuilt() as connection:
+        connection.execute("ALTER TABLE word_fam_tbl ADD CONSTRAINT test_reject_new CHECK (tag_code <> 'fam_new')")
+    payload = [WordWriteInput(word=word, common_form=word, hiragana='かな', meaning='释义', tags=['n'], fam=fam)
+               for word, fam in [('fail', 'fam_new'), ('ok', 'fam_ok')]]
+    rows = add_update_words_tools.add_update_words(username='甲', words=payload).model_dump(mode='json')['results']
+    assert [row['status'] for row in rows] == ['failed', 'created']
+    assert rows[1]['fam_status'] == 'created'
+    with rebuilt() as connection:
+        assert connection.execute("SELECT count(*) FROM word_tbl WHERE word='fail'").fetchone() == (0,)
+        assert connection.execute('SELECT count(*) FROM word_tag_tbl').fetchone() == (3,)
+        assert connection.execute('SELECT count(*) FROM word_fam_tbl').fetchone() == (1,)
+
+
+@pytest.mark.parametrize('action', ['create', 'update'])
+def test_deleted_word_rejected_before_unknown_tags_and_leaves_all_tables(rebuilt, action):
+    """删除状态优先于未知标签，三个写入表均保持原样。"""
+    seed(rebuilt)
+    write_fam('甲', 'a', 'fam_ok')
+    with rebuilt() as connection:
+        connection.execute("UPDATE word_tbl SET status_code='D' WHERE word='a'")
+        before = [connection.execute(f'SELECT * FROM {table}').fetchall()
+                  for table in ('word_tbl', 'word_tag_tbl', 'word_fam_tbl')]
+    row = add_update_words_tools.add_update_words(username='甲', words=[
+        WordWriteInput(word='a', tags=['missing'], fam='unknown', meaning='修改', action=action)
+    ]).model_dump(mode='json')['results'][0]
+    assert row['status'] == 'failed'
+    assert row['reason'] == '该单词已被删除，不允许操作。'
+    with rebuilt() as connection:
+        after = [connection.execute(f'SELECT * FROM {table}').fetchall()
+                 for table in ('word_tbl', 'word_tag_tbl', 'word_fam_tbl')]
+    assert before == after
+
+
+def test_familiarity_concurrent_same_value_has_single_record(rebuilt):
+    """同时标注同一用户和单词时由主表行锁串行化，只新增一次熟悉度。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    seed(rebuilt)
+    barrier = Barrier(2)
+
+    def mark():
+        """对齐两次请求开始时刻，通过独立数据库连接写入。"""
+        barrier.wait(timeout=5)
+        return write_fam('甲', 'a', 'fam_ok')['fam_status']
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(mark) for _ in range(2)]
+        assert sorted(future.result(timeout=15) for future in futures) == ['created', 'unchanged']
+    with rebuilt() as connection:
+        assert connection.execute('SELECT count(*) FROM word_fam_tbl').fetchone() == (1,)

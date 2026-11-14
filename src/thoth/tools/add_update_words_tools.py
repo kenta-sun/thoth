@@ -6,13 +6,17 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 from thoth.db.connection import DatabaseError
 from thoth.dto.request.add_update_words_request import WordWriteInput
+from thoth.dto.request.common import Username
 from thoth.dto.response.add_update_words_response import AddUpdateWordsResponse, WordWriteResult
 from thoth.dto.word import WordWriteCommand, WordBatchResult
 from thoth.service import add_update_words_service
 
-ADD_UPDATE_WORDS_DESCRIPTION = """新增或局部更新共享日语词库中的单词及标签。
+ADD_UPDATE_WORDS_DESCRIPTION = """新增或局部更新共享日语词库中的单词、普通标签及指定用户的熟悉度。
 每项独立事务；单项业务失败不影响其他项。同批重复 word 的所有项均失败。
-按原文精确匹配已有词，包括已标记删除的记录，不改变单词原文或记录状态。
+按原文精确匹配；已删除单词优先返回失败，不校验标签或执行任何写入。
+fam 与 tags 独立；省略 fam 保留原熟悉度，提供时新增或更新，不接受 null 或空字符串。
+仅更新 fam 不修改共享词条；相同熟悉度返回 unchanged。create 遇到已有词整项跳过，包括 fam。
+所有标签由 Service 检查存在性和类型，不存在时列出编码。
 create 对已有词仍检查标签是否合法；update 对不存在的词按新增要求检查完整信息。
 update 省略 tags 时保留原标签；提供时替换全部标签，不接受 null 或空数组。
 新增或替换标签时找不到合适已有标签不要提交，不得编造或随意选择标签。
@@ -23,24 +27,25 @@ def to_write_commands(words: list[WordWriteInput]) -> list[WordWriteCommand]:
     """显式提取业务字段，避免请求模型及其序列化约定进入 Service。"""
     return [WordWriteCommand(
         word=item.word, common_form=item.common_form, hiragana=item.hiragana,
-        meaning=item.meaning, tags=tuple(item.tags) if item.tags is not None else None, action=item.action,
+        meaning=item.meaning, fam=item.fam, tags=tuple(item.tags) if item.tags is not None else None, action=item.action,
     ) for item in words]
 
 
 def to_write_response(batch: WordBatchResult) -> AddUpdateWordsResponse:
     """按原下标转换保存结果，None 可选字段由响应模型省略。"""
     return AddUpdateWordsResponse(results=[WordWriteResult(
-        index=row.index, word=row.word, status=row.status, reason=row.reason,
+        index=row.index, word=row.word, status=row.status, reason=row.reason, fam_status=row.fam_status,
         fields=list(row.fields) if row.fields is not None else None,
     ) for row in batch.results])
 
 
 def add_update_words(
     words: Annotated[list[WordWriteInput], Field(min_length=1, description="待新增或更新的单词对象列表，至少一项；每项可独立指定 action。")],
+    username: Username,
 ) -> AddUpdateWordsResponse:
     """适配写入请求和响应；连接或整批业务失败转换为 MCP 工具错误。"""
     try:
-        batch = add_update_words_service.add_update_words(to_write_commands(words))
+        batch = add_update_words_service.add_update_words(to_write_commands(words), username)
         return to_write_response(batch)
     except (ValueError, DatabaseError) as exc:
         raise ToolError(str(exc)) from exc

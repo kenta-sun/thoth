@@ -55,6 +55,9 @@ def backend(monkeypatch):
         insert=Mock(return_value=WordEntity(id=1)),
         update=Mock(return_value=WordEntity(id=1)),
     )
+    repository.find_by_word_for_update.side_effect = lambda word: next(
+        (row for row in repository.find_existing_words.return_value if row.word == word), None)
+    monkeypatch.setattr(add_update_words_service, "require_user", Mock(return_value=SimpleNamespace(id=1)))
     repository_factory = Mock(return_value=repository)
     monkeypatch.setattr(add_update_words_service, "get_settings", get_settings)
     monkeypatch.setattr(add_update_words_service, "open_connection", open_connection)
@@ -73,7 +76,7 @@ def call_add_update_words(words):
     """通过内存客户端调用工具，返回包含结构化内容或工具错误的协议响应。"""
     async def run():
         async with Client(mcp_server.mcp) as client:
-            return await client.call_tool_mcp("add_update_words", {"words": words})
+            return await client.call_tool_mcp("add_update_words", {"username": "tester", "words": words})
     return asyncio.run(run())
 
 
@@ -103,8 +106,8 @@ def test_tools_are_exposed_and_save_description_explains_default(backend):
 
     assert {tool.name for tool in tools} == {"add_update_words", "count_words", "reset_word_miss", "query_words", "query_users"}
     tool = next(tool for tool in tools if tool.name == "add_update_words")
-    assert tool.inputSchema["required"] == ["words"]
-    assert set(tool.inputSchema["properties"]) == {"words"}
+    assert set(tool.inputSchema["required"]) == {"words", "username"}
+    assert set(tool.inputSchema["properties"]) == {"words", "username"}
     words = tool.inputSchema["properties"]["words"]
     assert words["type"] == "array" and words["minItems"] == 1
     item = words["items"]

@@ -21,6 +21,7 @@ class WordWriteCommand:
     hiragana: str | None = None  # 平假名读音；None 或空白表示更新时忽略。
     meaning: str | None = None  # 中文释义；None 或空白表示更新时忽略。
     action: Literal["create", "update"] = "create"  # 新增跳过或局部更新指令。
+    fam: str | None = None  # 当前用户的熟悉度标签；None 表示不修改。
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,7 @@ class WordInput:
     action: Literal["create", "update"] = "create"
     # 逐项输入错误；None 表示输入校验通过，仍需检查批内重复和保存条件。
     error: str | None = None
+    fam: str | None = None  # 当前用户的熟悉度标签；None 表示省略。
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ class WordItemResult:
     reason: str | None = None
     # 实际新增时缺少的信息字段名；None 表示该项没有缺失字段报告。
     fields: tuple[str, ...] | None = None
+    fam_status: Literal["created", "updated", "unchanged"] | None = None  # 熟悉度写入结果；未处理时省略。
 
 
 @dataclass(frozen=True, slots=True)

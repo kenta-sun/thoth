@@ -66,27 +66,27 @@ def test_mapper_does_not_swallow_partial_insert_errors():
 
 def test_json_through_all_mappers_preserves_update_and_replaces_tags():
     connection = ScriptedConnection(
-        [database_row("飲む", meaning="旧释义", status_code="D")],
-        [tag_row("v"), tag_row("v2")], database_row("食べる", record_id=8), None, None, None,
-        [tag_row("v")], database_row("飲む", meaning="喝", status_code="D"), None, None,
+        [database_row("飲む", meaning="旧释义", status_code="A")],
+        None, [tag_row("v"), tag_row("v2")], database_row("食べる", record_id=8), None, None, None,
+        database_row("飲む", meaning="旧释义"), [tag_row("v")], database_row("飲む", meaning="喝", status_code="A"), None, None,
     )
     requests = prepare_inputs([
         {"word": "食べる", "common_form": "食べる", "hiragana": "たべる", "meaning": "吃", "tags": ["v", "v2"]},
         {"word": "飲む", "meaning": "喝", "tags": ["v"], "action": "update"},
     ])
-    result = serialize_word_batch(save_word_batch(requests, connection))
+    result = serialize_word_batch(save_word_batch(requests, connection, user_id=1))
     assert result == {"results": [
         {"index": 0, "word": "食べる", "status": "created"},
         {"index": 1, "word": "飲む", "status": "updated"},
     ]}
     assert connection.commits == 2 and connection.rollbacks == 0
     assert [query.split()[0] for query, _ in connection.statements] == [
-        "SELECT", "SELECT", "INSERT", "DELETE", "INSERT", "INSERT",
-        "SELECT", "UPDATE", "DELETE", "INSERT",
+        "SELECT", "SELECT", "SELECT", "INSERT", "DELETE", "INSERT", "INSERT",
+        "SELECT", "SELECT", "UPDATE", "DELETE", "INSERT",
     ]
-    assert connection.statements[3][1] == {"word_id": 8}
-    assert connection.statements[8][1] == {"word_id": 7}
-    assert connection.statements[7][1] == {
+    assert connection.statements[4][1] == {"word_id": 8}
+    assert connection.statements[10][1] == {"word_id": 7}
+    assert connection.statements[9][1] == {
         "word": "飲む", "common_form": None, "hiragana": None,
         "meaning": "喝",
     }
@@ -94,15 +94,15 @@ def test_json_through_all_mappers_preserves_update_and_replaces_tags():
 
 def test_real_mapper_error_rolls_back_before_next_word_transaction():
     connection = ScriptedConnection(
-        [], [tag_row()], database_row(), None,
+        [], None, [tag_row()], database_row(), None,
         psycopg.errors.ForeignKeyViolation("secret driver detail"),
-        [tag_row()], database_row("飲む", record_id=8), None, None,
+        None, [tag_row()], database_row("飲む", record_id=8), None, None,
     )
     requests = prepare_inputs([
         {"word": word, "common_form": word, "hiragana": "かな", "meaning": "释义", "tags": ["v"]}
         for word in ["食べる", "飲む"]
     ])
-    results = save_word_batch(requests, connection).results
+    results = save_word_batch(requests, connection, user_id=1).results
     assert [row.status for row in results] == ["failed", "created"]
     assert "23503" in results[0].reason and "secret" not in results[0].reason
     assert connection.rollbacks == connection.commits == 1

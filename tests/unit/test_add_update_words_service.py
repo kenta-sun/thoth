@@ -87,6 +87,12 @@ def repository(monkeypatch):
         for entity in entities:
             connection.links.setdefault(entity.word_id, []).append(entity.tag_code)
 
+    def locked(word):
+        """锁定查询返回当前记录或批量查询快照，模拟同一事务中的可见词条。"""
+        return connection.words.get(word) or next(
+            (replace(row, id=row.id or 7) for row in repo.find_existing_words.return_value if row.word == word), None)
+
+    repo.find_by_word_for_update.side_effect = locked
     repo.insert.side_effect = write
     repo.update.side_effect = write
     links.delete_by_word_id.side_effect = delete
@@ -102,7 +108,7 @@ def repository(monkeypatch):
 
 def save_items(items, repository):
     """通过真实解析和 Service 流程处理输入，Mapper 由 fixture 隔离。"""
-    return save_word_batch(prepare_inputs(items), repository.connection)
+    return save_word_batch(prepare_inputs(items), repository.connection, user_id=1)
 
 
 def complete_word(word="食べる"):
@@ -169,7 +175,7 @@ def test_tags_are_deduplicated_without_changing_case():
 
 def test_create_preserves_entity_and_writes_tags_in_one_transaction(repository):
     requests = prepare_inputs([complete_word()])
-    result = save_word_batch(requests, repository.connection)
+    result = save_word_batch(requests, repository.connection, user_id=1)
     assert repository.insert.call_args.args[0] is requests[0].entity
     repository.find_existing_words.assert_called_once_with(["食べる"])
     repository.links_mapper.delete_by_word_id.assert_called_once_with(7)
@@ -248,6 +254,7 @@ def test_unknown_tag_prevents_all_writes_even_for_existing_create(repository, ac
 def test_concurrent_insert_conflict(repository, action, expected):
     repository.insert.side_effect = None
     repository.insert.return_value = None
+    repository.find_by_word_for_update.side_effect = [None, WordEntity(id=7, word="食べる", status_code="A")]
     result = save_items([{**complete_word(), "action": action}], repository)
     assert result.results[0].status == expected
     assert repository.update.call_count == (action == "update")
@@ -403,3 +410,149 @@ def test_update_without_tags_failure_rolls_back_and_preserves_tags(repository, p
     repository.tags_mapper.find_by_codes.assert_not_called()
     repository.links_mapper.delete_by_word_id.assert_not_called()
     repository.links_mapper.insert_many.assert_not_called()
+
+
+@pytest.fixture
+def familiarity(repository, monkeypatch):
+    """模拟按用户隔离的熟悉度表，复用同一事务的快照及回滚。"""
+    from thoth.entity import WordFamEntity
+    connection = repository.connection
+    connection.fam = {}
+    original = connection.transaction
+
+    @contextmanager
+    def transaction():
+        """熟悉度写入或提交失败时，与单词和普通标签一并恢复。"""
+        before = connection.fam.copy()
+        try:
+            with original():
+                yield
+        except BaseException:
+            connection.fam = before
+            raise
+
+    connection.transaction = transaction
+    mapper = Mock()
+    mapper.find_for_update.side_effect = lambda **keys: connection.fam.get((keys['user_id'], keys['word_id']))
+
+    def save(entity):
+        """按完整联合主键存储实体，验证不会覆盖其他用户的熟悉度。"""
+        assert connection.active
+        assert isinstance(entity, WordFamEntity)
+        connection.fam[(entity.user_id, entity.word_id)] = entity
+
+    mapper.save.side_effect = save
+    monkeypatch.setattr(service, 'WordFamTblMapper', Mock(return_value=mapper))
+    return mapper
+
+
+@pytest.mark.parametrize('action', ['create', 'update'])
+def test_deleted_word_has_priority_over_tag_validation(repository, familiarity, action):
+    """已删除词即使携带不存在的标签，也先报告删除且不触碰任何关联。"""
+    repository.find_existing_words.return_value = [WordEntity(id=7, word='食べる', status_code='D')]
+    result = save_items([{**complete_word(), 'tags': ['missing'], 'fam': 'missing_fam', 'action': action}], repository)
+    assert result.results[0].reason == '该单词已被删除，不允许操作。'
+    repository.tags_mapper.find_by_codes.assert_not_called()
+    repository.insert.assert_not_called()
+    repository.update.assert_not_called()
+    familiarity.save.assert_not_called()
+
+
+@pytest.mark.parametrize('action', ['create', 'update'])
+def test_concurrent_insert_of_deleted_word_rolls_back(repository, familiarity, action):
+    """初查不存在而并发插入了删除记录时，也不能绕过状态拦截。"""
+    repository.insert.side_effect = None
+    repository.insert.return_value = None
+    repository.find_by_word_for_update.side_effect = [None, WordEntity(id=7, status_code='D')]
+    result = save_items([{**complete_word(), 'fam': 'fam_new', 'action': action}], repository)
+    assert result.results[0].status == 'failed'
+    assert '已被删除' in result.results[0].reason
+    repository.update.assert_not_called()
+    repository.links_mapper.insert_many.assert_not_called()
+    familiarity.save.assert_not_called()
+
+
+def test_create_with_familiarity_and_existing_create_skips_all(repository, familiarity):
+    """新增同时保存熟悉度；再次 create 不修改已存在记录。"""
+    payload = {**complete_word(), 'fam': 'fam_new'}
+    result = save_items([payload], repository)
+    assert result.results[0].fam_status == 'created'
+    assert repository.connection.fam[(1, 7)].tag_code == 'fam_new'
+    result = save_items([{**payload, 'fam': 'fam_ok'}], repository)
+    assert result.results[0].status == 'skipped'
+    assert result.results[0].fam_status is None
+    assert repository.connection.fam[(1, 7)].tag_code == 'fam_new'
+    assert familiarity.save.call_count == 1
+
+
+def test_familiarity_only_update_is_isolated_and_idempotent(repository, familiarity):
+    """用户熟悉度独立保存，相同值不写入且不修改共享词条。"""
+    old = WordEntity(id=7, word='食べる', meaning='吃', status_code='A')
+    repository.connection.words['食べる'] = old
+    requests = prepare_inputs([{'word': '食べる', 'action': 'update', 'fam': 'fam_ok'}])
+    result = save_word_batch(requests, repository.connection, user_id=1)
+    assert result.results[0].fam_status == 'created'
+    result = save_word_batch(requests, repository.connection, user_id=1)
+    assert result.results[0].fam_status == 'unchanged'
+    assert familiarity.save.call_count == 1
+    requests = prepare_inputs([{'word': '食べる', 'action': 'update', 'fam': 'fam_new'}])
+    save_word_batch(requests, repository.connection, user_id=2)
+    assert repository.connection.fam[(1, 7)].tag_code == 'fam_ok'
+    assert repository.connection.fam[(2, 7)].tag_code == 'fam_new'
+    result = save_word_batch(requests, repository.connection, user_id=1)
+    assert result.results[0].fam_status == 'updated'
+    assert repository.connection.words['食べる'] is old
+    repository.update.assert_not_called()
+    repository.links_mapper.delete_by_word_id.assert_not_called()
+
+
+@pytest.mark.parametrize('payload,reason', [
+    ({'tags': ['fam_ok']}, 'tags 只接受普通标签'),
+    ({'fam': 'v'}, 'fam 只接受熟悉度标签'),
+])
+def test_tag_type_mismatch_prevents_all_writes(repository, familiarity, payload, reason):
+    result = save_items([{**complete_word(), **payload}], repository)
+    assert reason in result.results[0].reason
+    repository.insert.assert_not_called()
+    familiarity.save.assert_not_called()
+
+
+def test_unknown_tags_reports_both_fields_before_type_validation(repository, familiarity):
+    repository.tags_mapper.find_by_codes.side_effect = lambda codes: []
+    result = save_items([{**complete_word(), 'tags': ['unknown'], 'fam': 'unknown_fam'}], repository)
+    assert result.results[0].reason == '标签不存在：unknown, unknown_fam。'
+    repository.insert.assert_not_called()
+
+
+@pytest.mark.parametrize('value', [None, '', ' ', 1, 'fam-ok'])
+def test_invalid_fam_request_rejected(repository, value):
+    with pytest.raises(ValueError):
+        save_items([{**complete_word(), 'fam': value}], repository)
+    repository.find_existing_words.assert_not_called()
+
+
+@pytest.mark.parametrize('phase', ['fam', 'commit'])
+def test_familiarity_failure_rolls_back_every_table(repository, familiarity, phase):
+    if phase == 'fam':
+        original = familiarity.save.side_effect
+
+        def fail(entity):
+            """先模拟写入再失败，确保三张表均回滚。"""
+            original(entity)
+            raise psycopg.errors.CheckViolation('private')
+
+        familiarity.save.side_effect = fail
+    else:
+        repository.connection.commit_error = psycopg.errors.CheckViolation('private')
+    result = save_items([{**complete_word(), 'fam': 'fam_new'}], repository)
+    assert result.results[0].status == 'failed'
+    assert result.results[0].fam_status is None
+    assert repository.connection.words == {}
+    assert repository.connection.links == {}
+    assert repository.connection.fam == {}
+
+
+def test_missing_word_fam_only_requires_complete_new_word(repository, familiarity):
+    result = save_items([{'word': '不存在', 'fam': 'fam_new', 'action': 'update'}], repository)
+    assert result.results[0].fields == ('common_form', 'hiragana', 'meaning', 'tags')
+    familiarity.save.assert_not_called()
