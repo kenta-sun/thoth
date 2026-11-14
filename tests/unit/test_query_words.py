@@ -247,3 +247,74 @@ def test_count_joins_are_scoped_by_user_word_and_type():
         assert (f"LEFT JOIN word_count_tbl AS {alias} ON {alias}.word_id = w.id "
                 f"AND {alias}.user_id = %(user_id)s AND {alias}.count_type = '{kind}'") in query.sql
     assert 'count_type' not in query.sql.partition('WHERE')[2]
+
+
+def test_fam_projection_filter_join_and_parameter_binding():
+    """熟悉度投影和筛选共用默认值表达式，值绑定参数，关联按用户隔离且仅出现一次。"""
+    query = build({'fields': ['word', 'fam'], 'where': {'fam': {'in': ['fam_new', 'fam_ok']}}})
+    assert query.sql.count('LEFT JOIN word_fam_tbl') == 1
+    assert 'f.word_id = w.id AND f.user_id = %(user_id)s' in query.sql
+    assert "COALESCE(f.tag_code, 'fam_new') AS \"fam\"" in query.sql
+    assert "COALESCE(f.tag_code, 'fam_new') = ANY(%(p0)s)" in query.sql
+    assert query.params == {'p0': ['fam_new', 'fam_ok']}
+    assert 'fam_ok' not in query.sql
+    assert 'word_fam_tbl' not in build({'fields': ['word']}).sql
+    assert 'word_fam_tbl' in build({'fields': ['word'], 'where': {'fam': {'in': ['fam_new']}}}).sql
+    assert 'fam' in WordQueryInput().fields
+
+
+@pytest.mark.parametrize('raw', [
+    {'where': {'fam': {'in': []}}}, {'where': {'fam': None}},
+    {'where': {'fam': {}}}, {'where': {'fam': {'in': [None]}}},
+    {'where': {'fam': {'eq': 'fam_new'}}},
+    {'sort': [{'field': 'fam', 'direction': 'asc'}]},
+])
+def test_fam_schema_rejects_invalid_filter_and_sort(raw):
+    """熟悉度只允许非空 in 数组，Schema 与运行时一致。"""
+    with pytest.raises(ValueError):
+        WordQueryInput.model_validate(raw)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(raw, WordQueryInput.model_json_schema())
+
+
+def test_fam_projection_uses_entity_and_remains_separate_from_tags():
+    fields = ('tags', 'fam')
+    factory = _query_row_factory(SimpleNamespace(description=[SimpleNamespace(name=name) for name in fields]))
+    row = factory((['v'], 'fam_new'))
+    assert row.fam.tag_code == 'fam_new'
+    assert to_query_response([row], fields).model_dump(mode='json') == {
+        'results': [{'tags': ['v'], 'fam': 'fam_new'}]}
+    assert to_query_response([row], ('tags',)).model_dump(mode='json') == {'results': [{'tags': ['v']}]}
+
+
+@pytest.mark.parametrize('codes,existing,error', [
+    (['missing', 'v'], ['v'], '标签不存在：missing'),
+    (['v'], ['v'], 'fam 只接受熟悉度标签'),
+    (['fam_new'], [], '标签不存在：fam_new'),
+    (['fam_new', 'fam_ok', 'fam_new'], ['fam_new', 'fam_ok'], None),
+])
+def test_service_validates_fam_before_word_query(monkeypatch, codes, existing, error):
+    """校验字典存在性优先于类型；错误不得执行词条查询，重复编码查询时去重。"""
+    from thoth.entity import TagEntity
+    monkeypatch.setattr(service, 'require_user', Mock(return_value=SimpleNamespace(id=1)))
+    monkeypatch.setattr(service, 'get_settings', lambda: None)
+
+    @contextmanager
+    def connect(settings):
+        """只提供占位连接，两个 Mapper 均由内存模拟接管。"""
+        yield object()
+
+    monkeypatch.setattr(service, 'open_connection', connect)
+    tags = Mock(find_by_codes=Mock(return_value=[TagEntity(code=code) for code in existing]))
+    words = Mock(query_words=Mock(return_value=[]))
+    monkeypatch.setattr(service, 'TagTblMapper', Mock(return_value=tags))
+    monkeypatch.setattr(service, 'WordTblMapper', Mock(return_value=words))
+    request = to_query_request(WordQueryInput.model_validate({'where': {'fam': {'in': codes}}}))
+    if error:
+        with pytest.raises(ValueError, match=error):
+            service.query_words(request, 'tester')
+        words.query_words.assert_not_called()
+    else:
+        assert service.query_words(request, 'tester') == []
+        words.query_words.assert_called_once_with(request, user_id=1)
+    tags.find_by_codes.assert_called_once_with(list(dict.fromkeys(codes)))

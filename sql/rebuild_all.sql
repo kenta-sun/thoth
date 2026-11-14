@@ -229,7 +229,7 @@ CREATE TABLE count_type_tbl
 
 COMMENT ON TABLE count_type_tbl IS '计数类型表';
 
-COMMENT ON COLUMN count_type_tbl.code IS '计数类型编码，例如miss、usage，作为主键';
+COMMENT ON COLUMN count_type_tbl.code IS '计数类型';
 COMMENT ON COLUMN count_type_tbl.description IS '计数类型的中文说明';
 COMMENT ON COLUMN count_type_tbl.created_at IS '创建时间';
 COMMENT ON COLUMN count_type_tbl.updated_at IS '最后更新时间';
@@ -265,9 +265,9 @@ CREATE TABLE word_count_tbl
 
 COMMENT ON TABLE word_count_tbl IS '单词分类计数表';
 
-COMMENT ON COLUMN word_count_tbl.user_id IS '用户ID，与单词ID、计数类型构成联合主键';
-COMMENT ON COLUMN word_count_tbl.word_id IS '单词ID，与用户ID、计数类型构成联合主键';
-COMMENT ON COLUMN word_count_tbl.count_type IS '计数类型，关联count_type_tbl.code，与用户ID、单词ID构成联合主键';
+COMMENT ON COLUMN word_count_tbl.user_id IS '用户ID';
+COMMENT ON COLUMN word_count_tbl.word_id IS '单词ID';
+COMMENT ON COLUMN word_count_tbl.count_type IS '计数类型';
 COMMENT ON COLUMN word_count_tbl.count_value IS '该用户对该单词在指定类型下的累计次数，非负，默认0';
 COMMENT ON COLUMN word_count_tbl.created_at IS '创建时间';
 COMMENT ON COLUMN word_count_tbl.updated_at IS '最后更新时间';

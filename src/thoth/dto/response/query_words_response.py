@@ -12,6 +12,7 @@ class QueryWordResult(ResponseModel):
     hiragana: str | None = Field(default=None, description="平假名读音，仅选择该字段时输出。")
     meaning: str | None = Field(default=None, description="中文释义，仅选择该字段时输出。")
     tags: list[str] | None = Field(default=None, description="按编码排序的标签集合，仅选择该字段时输出。")
+    fam: str | None = Field(default=None, description="指定用户熟悉度编码，未评定按 fam_new；仅选择该字段时输出。")
     usage_count: int | None = Field(default=None, description="指定用户使用次数，无统计按零，仅选择该字段时输出。")
     miss_count: int | None = Field(default=None, description="指定用户陌生次数，无统计按零，仅选择该字段时输出。")
 

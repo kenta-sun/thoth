@@ -16,7 +16,7 @@ def query_database(database, monkeypatch):
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     with database() as connection:
-        for table in ("tag_tbl", "word_tag_tbl"):
+        for table in ("tag_tbl", "word_tag_tbl", "word_fam_tbl"):
             connection.execute((root / f"sql/ddl/ddl__create_table__{table}.sql").read_text())
         connection.execute((root / "sql/dml/dml__tag_tbl.sql").read_text())
         connection.execute("UPDATE word_tbl SET common_form=CASE word WHEN 'a' THEN '食べる' ELSE '食事' END")
@@ -58,7 +58,7 @@ def test_defaults_and_projection_do_not_write_statistics(query_database):
     rows = sorted(query({}), key=lambda row: row["word"])
     assert [row["word"] for row in rows] == ["a", "b", "c", "d", "literal"]
     assert rows[0] == {"word": "a", "common_form": "食べる", "hiragana": "a", "meaning": "a",
-                       "tags": ["v", "v2"], "usage_count": 0, "miss_count": 4}
+                       "tags": ["v", "v2"], "fam": "fam_new", "usage_count": 0, "miss_count": 4}
     assert rows[1]["miss_count"] == 0 and rows[-1]["tags"] == []
     assert query({"fields": ["common_form"], "sort": [{"field": "word", "direction": "asc"}], "limit": 1}) == [{"common_form": "食べる"}]
     assert query({"where": {"word": {"eq": "deleted"}}}) == []
@@ -123,3 +123,39 @@ def test_random_selection_respects_filter_limit_and_uniqueness(query_database):
     rows = query({"fields": ["word", "miss_count"], "sort": [
         {"field": "miss_count", "direction": "desc"}, {"field": "random"}]})
     assert [row["miss_count"] for row in rows] == [9, 4, 2, 0, 0]
+
+
+def test_fam_defaults_user_isolation_combination_and_read_only(query_database):
+    """未评定与显式 new 同时命中；其他用户不影响结果，查询不创建默认记录。"""
+    with query_database() as connection:
+        connection.execute("""
+            INSERT INTO word_fam_tbl (user_id, word_id, tag_code)
+            SELECT 1, id, CASE word WHEN 'a' THEN 'fam_new' WHEN 'c' THEN 'fam_rep' ELSE 'fam_ok' END
+            FROM word_tbl WHERE word IN ('a','c','d','deleted')
+        """)
+        connection.execute("INSERT INTO word_fam_tbl (user_id, word_id, tag_code) SELECT 2, id, 'fam_ok' FROM word_tbl WHERE word='b'")
+        before = connection.execute('SELECT * FROM word_fam_tbl ORDER BY user_id, word_id').fetchall()
+    rows = query({'fields': ['word', 'fam'], 'where': {'fam': {'in': ['fam_new']}},
+                  'sort': [{'field': 'word', 'direction': 'asc'}]})
+    assert rows == [{'word': word, 'fam': 'fam_new'} for word in ('a', 'b', 'literal')]
+    assert query({'fields': ['word', 'tags', 'fam', 'miss_count'],
+                  'where': {'fam': {'in': ['fam_new', 'fam_rep', 'fam_new']},
+                            'tags': {'in': ['v', 'v2']}, 'miss_count': {'gte': 2}},
+                  'sort': [{'field': 'miss_count', 'direction': 'desc'}], 'limit': 1}) == [
+        {'word': 'a', 'tags': ['v', 'v2'], 'fam': 'fam_new', 'miss_count': 4}]
+    assert query({'fields': ['word'], 'where': {'fam': {'in': ['fam_ok']}}}) == [{'word': 'd'}]
+    other = query_words(username='other', query=WordQueryInput.model_validate(
+        {'fields': ['word', 'fam'], 'where': {'fam': {'in': ['fam_ok']}}})).model_dump(mode='json')['results']
+    assert other == [{'word': 'b', 'fam': 'fam_ok'}]
+    assert query({'fields': ['fam'], 'where': {'word': {'eq': 'literal'}}}) == [{'fam': 'fam_new'}]
+    assert query({'where': {'fam': {'in': ['fam_inf']}}}) == []
+    with query_database() as connection:
+        assert connection.execute('SELECT * FROM word_fam_tbl ORDER BY user_id, word_id').fetchall() == before
+
+
+@pytest.mark.parametrize('code,message', [('not_exists', '标签不存在'), ('v', '类型不符')])
+def test_fam_invalid_tag_returns_tool_error(query_database, code, message):
+    """字典不存在或标签类型错误由 Service 转为工具错误，不返回误导性的空结果。"""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match=message):
+        query({'where': {'fam': {'in': [code]}}})

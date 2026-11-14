@@ -4,7 +4,7 @@ from typing import Annotated, Literal, Any
 from pydantic import AfterValidator, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from thoth.common.query_words import QUERY_FIELDS
-from thoth.common.tags import TAG_OPTIONS_DESCRIPTION
+from thoth.common.tags import TAG_OPTIONS_DESCRIPTION, FAMILIARITY_TAG_DEFINITIONS
 from thoth.dto.request.common import RequestModel
 
 
@@ -21,7 +21,7 @@ def _database_text(value: str) -> str:
 
 QueryText = Annotated[str, AfterValidator(_database_text)]
 CountValue = Annotated[int, Field(ge=0, le=9223372036854775807, strict=True)]
-QueryField = Literal["word", "common_form", "hiragana", "meaning", "tags", "usage_count", "miss_count"]
+QueryField = Literal["word", "common_form", "hiragana", "meaning", "tags", "fam", "usage_count", "miss_count"]
 SortField = Literal["word", "common_form", "hiragana", "meaning", "usage_count", "miss_count"]
 
 
@@ -95,6 +95,12 @@ class TagCondition(ConditionInput):
     in_: list[QueryText] = Field(alias="in", min_length=1, description="匹配拥有任一编码的单词，不推断标签层级。" + TAG_OPTIONS_DESCRIPTION)
 
 
+class FamiliarityCondition(ConditionInput):
+    """按当前用户的任一熟悉度编码匹配，未评定按 fam_new 参与筛选。"""
+
+    in_: list[QueryText] = Field(alias="in", min_length=1, description="匹配任一熟悉度标签；未评定按 fam_new。" + "；".join(f"{tag.code}={tag.zh_name}" for tag in FAMILIARITY_TAG_DEFINITIONS))
+
+
 class WordWhereInput(QueryModel):
     """所有已提供字段条件同时满足；空对象不增加筛选。"""
 
@@ -103,6 +109,7 @@ class WordWhereInput(QueryModel):
     hiragana: TextCondition | SkipJsonSchema[None] = Field(default=None, description="按平假名读音筛选。")
     meaning: TextCondition | SkipJsonSchema[None] = Field(default=None, description="按中文释义筛选。")
     tags: TagCondition | SkipJsonSchema[None] = Field(default=None, description="按已有标签编码筛选。")
+    fam: FamiliarityCondition | SkipJsonSchema[None] = Field(default=None, description="按指定用户的熟悉度筛选，独立于普通 tags；未评定按 fam_new。")
     usage_count: CountCondition | SkipJsonSchema[None] = Field(default=None, description="指定用户的使用次数，无统计按零。")
     miss_count: CountCondition | SkipJsonSchema[None] = Field(default=None, description="指定用户的陌生次数，无统计按零。")
 

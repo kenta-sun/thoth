@@ -14,6 +14,7 @@ from thoth.utils.sql_query_builder import build_query
 
 # 主表固定排除删除记录；统计按需 LEFT JOIN，缺失行在所有表达式中统一按零处理。
 # 两个统计别名各自限定完整联合主键，避免多类型关联扩大单词结果。
+# 熟悉度按用户和单词唯一关联；返回及筛选共用 COALESCE，未评定按 fam_new 且不写入记录。
 # 标签通过相关子查询投影、EXISTS 筛选，均不扩大主表行数，LIMIT 仍按单词计数。
 WORD_QUERY_SPEC = QuerySqlSpec(
     source="word_tbl AS w", predicate="w.status_code <> 'D'",
@@ -24,10 +25,13 @@ WORD_QUERY_SPEC = QuerySqlSpec(
             QUERY_OPERATORS["tags"], sortable=False,
             membership_expression="EXISTS (SELECT 1 FROM word_tag_tbl AS ft WHERE ft.word_id = w.id AND ft.tag_code = ANY({value}))",
         ),
+        "fam": SqlField("COALESCE(f.tag_code, 'fam_new')", QUERY_OPERATORS["fam"],
+                        sortable=False, joins=("fam",)),
         "usage_count": SqlField("COALESCE(u.count_value, 0)", QUERY_OPERATORS["usage_count"], joins=("usage",)),
         "miss_count": SqlField("COALESCE(m.count_value, 0)", QUERY_OPERATORS["miss_count"], joins=("miss",)),
     }),
     joins=MappingProxyType({
+        "fam": "LEFT JOIN word_fam_tbl AS f ON f.word_id = w.id AND f.user_id = %(user_id)s",
         "usage": "LEFT JOIN word_count_tbl AS u ON u.word_id = w.id AND u.user_id = %(user_id)s AND u.count_type = 'usage'",
         "miss": "LEFT JOIN word_count_tbl AS m ON m.word_id = w.id AND m.user_id = %(user_id)s AND m.count_type = 'miss'",
     }),
@@ -44,6 +48,8 @@ def _query_row_factory(cursor):
         for name, value in zip(columns, values, strict=True):
             if name == "tags":
                 result.tags = [WordTagEntity(tag_code=code) for code in value]
+            elif name == "fam":
+                result.fam.tag_code = value
             elif name == "usage_count":
                 result.usage.count_type = "usage"
                 result.usage.count_value = value
